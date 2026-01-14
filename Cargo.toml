@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "nangila-core",
+    "nangila-cuda",
+    "nangila-hook",
+    "nangila-dump",
+    "nangila-profile",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Nangila Team"]
+repository = "https://github.com/nangila/nangila"
+
+[workspace.dependencies]
+# Shared dependencies across crates
+thiserror = "2.0"
+tracing = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

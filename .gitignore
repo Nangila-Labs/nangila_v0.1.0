@@ -1,0 +1,37 @@
+# Build artifacts
+/target/
+*.so
+*.dylib
+*.dll
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+*.whl
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rust
+**/*.rs.bk
+Cargo.lock
+
+# CUDA
+*.ptx
+*.cubin
+
+# Test artifacts
+*.nzmask
+*.log

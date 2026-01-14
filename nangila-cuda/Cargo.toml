@@ -1,0 +1,18 @@
+[package]
+name = "nangila-cuda"
+description = "CUDA kernels for Nangila gradient compression"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nangila-core = { path = "../nangila-core" }
+thiserror.workspace = true
+
+[build-dependencies]
+cc = "1.0"
+
+[features]
+default = []
+cuda = []
+cpu_fallback = []

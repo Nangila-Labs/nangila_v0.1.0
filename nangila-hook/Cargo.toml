@@ -1,0 +1,25 @@
+[package]
+name = "nangila-hook"
+description = "PyTorch DDP integration for Nangila gradient compression"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "nangila"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+nangila-core = { path = "../nangila-core" }
+nangila-cuda = { path = "../nangila-cuda" }
+thiserror.workspace = true
+tracing.workspace = true
+
+# Python bindings (optional, for Python module)
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+numpy = { version = "0.22", optional = true }
+
+[features]
+default = []
+python = ["pyo3", "numpy"]
+

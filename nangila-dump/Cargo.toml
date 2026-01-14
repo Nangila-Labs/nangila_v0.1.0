@@ -1,0 +1,16 @@
+[package]
+name = "nangila-dump"
+description = "CLI tool for Nangila checkpoint verification and crash forensics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nangila-dump"
+path = "src/main.rs"
+
+[dependencies]
+nangila-core = { path = "../nangila-core" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

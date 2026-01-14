@@ -1,0 +1,25 @@
+[package]
+name = "nangila-core"
+description = "Core logic for Nangila gradient compression"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+half = "2.7"  # FP16 and BF16 support
+
+[dev-dependencies]
+criterion = "0.5"
+rand = "0.8"
+
+[[bench]]
+name = "predictor"
+harness = false
+
+[[bench]]
+name = "quantizer"
+harness = false

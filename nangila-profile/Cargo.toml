@@ -1,0 +1,19 @@
+[package]
+name = "nangila-profile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Standalone profiler for Nangila mask calibration"
+
+[[bin]]
+name = "nangila-profile"
+path = "src/main.rs"
+
+[dependencies]
+nangila-core = { path = "../nangila-core" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
