@@ -3,7 +3,7 @@
 //! These functions will be replaced with actual CUDA implementations.
 //! For now, they serve as placeholders showing the expected interface.
 
-use nangila_core::{Tensor, CompressedTensor};
+use nangila_core::{CompressedTensor, Tensor};
 
 /// Fused kernel: predict → subtract → quantize
 ///
@@ -24,36 +24,46 @@ pub fn predict_and_quantize(
 ) -> CompressedTensor {
     // CPU fallback implementation
     let numel = gradient.data.len();
-    
+
     // Predict
-    let prediction: Vec<f32> = curr_gradient.data.iter()
+    let prediction: Vec<f32> = curr_gradient
+        .data
+        .iter()
         .zip(&prev_gradient.data)
         .map(|(curr, prev)| curr + momentum * (curr - prev))
         .collect();
-    
+
     // Residual
-    let residual: Vec<f32> = gradient.data.iter()
+    let residual: Vec<f32> = gradient
+        .data
+        .iter()
         .zip(&prediction)
         .map(|(g, p)| g - p)
         .collect();
-    
+
     // Quantize to INT4
-    let quantized: Vec<i8> = residual.iter()
+    let quantized: Vec<i8> = residual
+        .iter()
         .map(|&r| {
             let scaled = r / gamma;
             (scaled.round() as i8).clamp(-8, 7)
         })
         .collect();
-    
+
     // Pack INT4
-    let packed: Vec<u8> = quantized.chunks(2)
+    let packed: Vec<u8> = quantized
+        .chunks(2)
         .map(|chunk| {
             let low = (chunk[0] & 0x0F) as u8;
-            let high = if chunk.len() > 1 { ((chunk[1] & 0x0F) as u8) << 4 } else { 0 };
+            let high = if chunk.len() > 1 {
+                ((chunk[1] & 0x0F) as u8) << 4
+            } else {
+                0
+            };
             low | high
         })
         .collect();
-    
+
     CompressedTensor {
         data: packed,
         gamma,
@@ -77,14 +87,14 @@ pub fn dequantize_and_add(
     momentum: f32,
 ) -> Tensor {
     // CPU fallback implementation
-    
+
     // Unpack INT4
     let mut quantized = Vec::with_capacity(compressed.numel);
     for &byte in &compressed.data {
         let low = (byte & 0x0F) as i8;
         let low = if low & 0x08 != 0 { low | !0x0F } else { low };
         quantized.push(low);
-        
+
         if quantized.len() < compressed.numel {
             let high = ((byte >> 4) & 0x0F) as i8;
             let high = if high & 0x08 != 0 { high | !0x0F } else { high };
@@ -92,24 +102,28 @@ pub fn dequantize_and_add(
         }
     }
     quantized.truncate(compressed.numel);
-    
+
     // Dequantize
-    let residual: Vec<f32> = quantized.iter()
+    let residual: Vec<f32> = quantized
+        .iter()
         .map(|&q| q as f32 * compressed.gamma)
         .collect();
-    
+
     // Predict
-    let prediction: Vec<f32> = curr_gradient.data.iter()
+    let prediction: Vec<f32> = curr_gradient
+        .data
+        .iter()
         .zip(&prev_gradient.data)
         .map(|(curr, prev)| curr + momentum * (curr - prev))
         .collect();
-    
+
     // Reconstruct
-    let data: Vec<f32> = residual.iter()
+    let data: Vec<f32> = residual
+        .iter()
         .zip(&prediction)
         .map(|(r, p)| r + p)
         .collect();
-    
+
     Tensor::new(data, compressed.shape.clone())
 }
 

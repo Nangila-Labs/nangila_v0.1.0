@@ -63,7 +63,7 @@ pub const CUDA_STREAM_DEFAULT: CudaStream = std::ptr::null_mut();
 extern "C" {
     /// Get last CUDA error
     fn cudaGetLastError() -> i32;
-    
+
     /// Launch fused predict-subtract-quantize kernel
     pub fn launch_predict_subtract_quantize(
         gradient: *const f32,
@@ -222,4 +222,3 @@ pub unsafe fn compute_gamma_cuda(
 ) -> CudaResult<()> {
     panic!("CUDA not available. Use CPU fallback in kernels/mod.rs");
 }
-

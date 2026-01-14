@@ -119,7 +119,11 @@ impl Tensor {
             shape.iter().product::<usize>(),
             "Tensor data length must match shape"
         );
-        Self { data, shape, dtype: DataType::Float32 }
+        Self {
+            data,
+            shape,
+            dtype: DataType::Float32,
+        }
     }
 
     /// Create a new tensor with specified dtype

@@ -163,7 +163,9 @@ fn cmd_diff(path_a: &PathBuf, path_b: &PathBuf) -> Result<(), Box<dyn std::error
 
     // Check for layers only in B
     for &layer_id in chk_b.predictor.histories.keys() {
-        if !chk_a.predictor.histories.contains_key(&layer_id) && !divergent_layers.contains(&layer_id) {
+        if !chk_a.predictor.histories.contains_key(&layer_id)
+            && !divergent_layers.contains(&layer_id)
+        {
             divergent_layers.push(layer_id);
         }
     }
@@ -192,7 +194,10 @@ fn cmd_diff(path_a: &PathBuf, path_b: &PathBuf) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn cmd_inspect(path: &PathBuf, output: Option<&std::path::Path>) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_inspect(
+    path: &PathBuf,
+    output: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let checkpoint = NangilaCheckpoint::load(path)?;
 
     let info = CheckpointInfo {
@@ -269,8 +274,18 @@ fn cmd_info(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("  Version:          {}", checkpoint.version);
     println!("  Step:             {}", checkpoint.step);
     println!("  State Hash:       {:016x}", checkpoint.state_hash);
-    println!("  Integrity:        {}", if checkpoint.verify_integrity() { "✓ Valid" } else { "✗ Invalid" });
-    println!("  Layers:           {}", checkpoint.predictor.histories.len());
+    println!(
+        "  Integrity:        {}",
+        if checkpoint.verify_integrity() {
+            "✓ Valid"
+        } else {
+            "✗ Invalid"
+        }
+    );
+    println!(
+        "  Layers:           {}",
+        checkpoint.predictor.histories.len()
+    );
     println!("  Quantizer Gamma:  {:.6}", checkpoint.quantizer_gamma);
     println!("  Predictor Step:   {}", checkpoint.predictor.current_step);
     println!("  Predictor μ:      {}", checkpoint.predictor.momentum);

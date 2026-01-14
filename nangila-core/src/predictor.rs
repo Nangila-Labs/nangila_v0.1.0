@@ -229,7 +229,8 @@ impl Predictor {
     pub fn restore_snapshots(&mut self, snapshots: &HashMap<LayerId, LayerHistorySnapshot>) {
         self.history.clear();
         for (&id, snapshot) in snapshots {
-            self.history.insert(id, LayerHistory::from_snapshot(snapshot));
+            self.history
+                .insert(id, LayerHistory::from_snapshot(snapshot));
         }
     }
 

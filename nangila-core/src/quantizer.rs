@@ -101,8 +101,8 @@ impl Quantizer {
         let gamma = if self.dynamic_gamma {
             let new_gamma = self.compute_gamma(tensor);
             // EMA update for stability
-            self.gamma_ema = self.gamma_momentum * self.gamma_ema
-                + (1.0 - self.gamma_momentum) * new_gamma;
+            self.gamma_ema =
+                self.gamma_momentum * self.gamma_ema + (1.0 - self.gamma_momentum) * new_gamma;
             self.gamma_ema.max(1e-8) // Guard against zero
         } else {
             self.gamma_ema.max(1e-8)
@@ -117,8 +117,12 @@ impl Quantizer {
             .iter()
             .map(|&x| {
                 // Guard against NaN/Inf - treat as zero
-                let x = if x.is_nan() || x.is_infinite() { 0.0 } else { x };
-                
+                let x = if x.is_nan() || x.is_infinite() {
+                    0.0
+                } else {
+                    x
+                };
+
                 let scaled = x / gamma;
                 // Stochastic rounding: round probabilistically based on fractional part
                 let floor = scaled.floor();

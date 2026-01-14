@@ -108,7 +108,11 @@ fn run_calibrate(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Calibrating mask from: {}", gradients_path.display());
     println!("  Threshold: {:.2}", threshold);
-    let max_steps_str = if max_steps == 0 { "all".to_string() } else { max_steps.to_string() };
+    let max_steps_str = if max_steps == 0 {
+        "all".to_string()
+    } else {
+        max_steps.to_string()
+    };
     println!("  Max steps: {}", max_steps_str);
 
     let mut sculptor = Sculptor::new(threshold);
@@ -168,7 +172,10 @@ fn run_calibrate(
     Ok(())
 }
 
-fn run_report(mask_path: &PathBuf, output_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn run_report(
+    mask_path: &PathBuf,
+    output_path: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading mask from: {}", mask_path.display());
 
     let file = File::open(mask_path)?;

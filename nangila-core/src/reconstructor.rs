@@ -5,8 +5,8 @@
 //! - Passenger layers: synthesized from Driver using coupling factors
 
 use crate::{
-    mask::LayerRole, CompressedTensor, LayerId, NangilaError, Predictor, Quantizer, Result,
-    Tensor, TopologyMask,
+    mask::LayerRole, CompressedTensor, LayerId, NangilaError, Predictor, Quantizer, Result, Tensor,
+    TopologyMask,
 };
 use std::collections::HashMap;
 
@@ -55,11 +55,7 @@ impl Reconstructor {
     /// Synthesize a Passenger layer gradient from its Driver
     ///
     /// g_passenger = α * g_driver + β
-    pub fn synthesize_passenger(
-        &self,
-        layer_id: LayerId,
-        mask: &TopologyMask,
-    ) -> Result<Tensor> {
+    pub fn synthesize_passenger(&self, layer_id: LayerId, mask: &TopologyMask) -> Result<Tensor> {
         let role = mask.get_role(layer_id)?;
 
         match role {

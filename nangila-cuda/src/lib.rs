@@ -11,8 +11,8 @@ pub mod bindings;
 pub mod kernels;
 
 pub use bindings::{
-    compute_gamma_cuda, dequantize_and_reconstruct_cuda, predict_and_quantize_cuda,
-    CudaStream, CUDA_STREAM_DEFAULT,
+    compute_gamma_cuda, dequantize_and_reconstruct_cuda, predict_and_quantize_cuda, CudaStream,
+    CUDA_STREAM_DEFAULT,
 };
 pub use kernels::{dequantize_and_add, predict_and_quantize};
 

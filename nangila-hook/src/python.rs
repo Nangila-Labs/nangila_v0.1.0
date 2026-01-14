@@ -7,9 +7,7 @@ use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use nangila_core::{
-    NangilaConfig, Sculptor as RustSculptor, Tensor, TopologyMask,
-};
+use nangila_core::{NangilaConfig, Sculptor as RustSculptor, Tensor, TopologyMask};
 
 use crate::hook::NangilaHook as RustHook;
 

@@ -57,7 +57,8 @@ impl MetricsCollector {
     /// Record bytes transmitted
     pub fn record_bytes(&self, received: u64, transmitted: u64) {
         self.bytes_received.fetch_add(received, Ordering::Relaxed);
-        self.bytes_transmitted.fetch_add(transmitted, Ordering::Relaxed);
+        self.bytes_transmitted
+            .fetch_add(transmitted, Ordering::Relaxed);
     }
 
     /// Record a fallback event
@@ -68,7 +69,8 @@ impl MetricsCollector {
     /// Update compression ratio
     pub fn set_compression_ratio(&self, ratio: f32) {
         let ratio_x1000 = (ratio * 1000.0) as u64;
-        self.compression_ratio_x1000.store(ratio_x1000, Ordering::Relaxed);
+        self.compression_ratio_x1000
+            .store(ratio_x1000, Ordering::Relaxed);
     }
 
     /// Get current metrics snapshot
@@ -188,7 +190,10 @@ impl NangilaMetrics {
         // Bytes counters
         output.push_str("# HELP nangila_bytes_received Total bytes received (uncompressed)\n");
         output.push_str("# TYPE nangila_bytes_received counter\n");
-        output.push_str(&format!("nangila_bytes_received {}\n\n", self.bytes_received));
+        output.push_str(&format!(
+            "nangila_bytes_received {}\n\n",
+            self.bytes_received
+        ));
 
         output.push_str("# HELP nangila_bytes_transmitted Total bytes transmitted (compressed)\n");
         output.push_str("# TYPE nangila_bytes_transmitted counter\n");
@@ -204,7 +209,10 @@ impl NangilaMetrics {
         // Fallback counter
         output.push_str("# HELP nangila_fallback_total Safe Mode fallback events\n");
         output.push_str("# TYPE nangila_fallback_total counter\n");
-        output.push_str(&format!("nangila_fallback_total {}\n\n", self.fallback_count));
+        output.push_str(&format!(
+            "nangila_fallback_total {}\n\n",
+            self.fallback_count
+        ));
 
         // Uptime gauge
         output.push_str("# HELP nangila_uptime_seconds Time since start\n");

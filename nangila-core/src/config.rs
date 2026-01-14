@@ -133,10 +133,14 @@ impl NangilaConfig {
             return Err(ConfigError::InvalidBits(self.quantize_bits));
         }
         if !(0.0..=1.0).contains(&self.monitor_sample_fraction) {
-            return Err(ConfigError::InvalidSampleFraction(self.monitor_sample_fraction));
+            return Err(ConfigError::InvalidSampleFraction(
+                self.monitor_sample_fraction,
+            ));
         }
         if self.promotion_threshold <= 0.0 {
-            return Err(ConfigError::InvalidPromotionThreshold(self.promotion_threshold));
+            return Err(ConfigError::InvalidPromotionThreshold(
+                self.promotion_threshold,
+            ));
         }
         Ok(())
     }
@@ -164,4 +168,3 @@ mod tests {
         assert!(matches!(config, Err(ConfigError::InvalidBits(_))));
     }
 }
-

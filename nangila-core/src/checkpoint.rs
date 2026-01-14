@@ -147,7 +147,9 @@ impl NangilaCheckpoint {
         let mut magic = [0u8; 8];
         reader.read_exact(&mut magic)?;
         if magic != CHECKPOINT_MAGIC {
-            return Err(crate::NangilaError::InvalidFormat("Invalid checkpoint magic".into()));
+            return Err(crate::NangilaError::InvalidFormat(
+                "Invalid checkpoint magic".into(),
+            ));
         }
 
         // Version
@@ -218,7 +220,10 @@ impl NangilaCheckpoint {
         })
     }
 
-    fn write_optional_buffer<W: Write>(writer: &mut W, buf: &Option<Vec<i32>>) -> std::io::Result<()> {
+    fn write_optional_buffer<W: Write>(
+        writer: &mut W,
+        buf: &Option<Vec<i32>>,
+    ) -> std::io::Result<()> {
         match buf {
             Some(data) => {
                 writer.write_all(&1u8.to_le_bytes())?; // Present flag

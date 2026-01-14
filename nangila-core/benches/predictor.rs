@@ -8,7 +8,7 @@ fn make_tensor(size: usize) -> Tensor {
 
 fn bench_predictor(c: &mut Criterion) {
     let mut predictor = Predictor::new(0.9, 0);
-    
+
     // Warm up predictor
     for i in 0..10 {
         predictor.update(0, make_tensor(1_000_000));
@@ -17,16 +17,12 @@ fn bench_predictor(c: &mut Criterion) {
     predictor.update(0, make_tensor(1_000_000));
 
     c.bench_function("predictor_predict_1M", |b| {
-        b.iter(|| {
-            black_box(predictor.predict(0).unwrap())
-        })
+        b.iter(|| black_box(predictor.predict(0).unwrap()))
     });
 
     c.bench_function("predictor_update_1M", |b| {
         let tensor = make_tensor(1_000_000);
-        b.iter(|| {
-            predictor.update(1, black_box(tensor.clone()))
-        })
+        b.iter(|| predictor.update(1, black_box(tensor.clone())))
     });
 }
 

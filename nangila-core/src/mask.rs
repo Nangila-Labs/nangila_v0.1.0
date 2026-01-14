@@ -87,7 +87,10 @@ impl TopologyMask {
 
     /// Check if a layer is a Passenger
     pub fn is_passenger(&self, layer_id: LayerId) -> bool {
-        matches!(self.layers.get(&layer_id), Some(LayerRole::Passenger { .. }))
+        matches!(
+            self.layers.get(&layer_id),
+            Some(LayerRole::Passenger { .. })
+        )
     }
 
     /// Get all Driver layer IDs

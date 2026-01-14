@@ -5,8 +5,8 @@
 
 use crate::safe_mode::{SafeMode, SafeModeAction, SafeModeConfig, SafeModeStats};
 use crate::{
-    CompressedTensor, LayerId, NangilaConfig, Predictor, Quantizer, Reconstructor, Result,
-    Tensor, TopologyMask,
+    CompressedTensor, LayerId, NangilaConfig, Predictor, Quantizer, Reconstructor, Result, Tensor,
+    TopologyMask,
 };
 use std::collections::HashMap;
 
@@ -52,7 +52,8 @@ impl NangilaState {
             config.momentum,
             config.warmup_steps + config.shadow_run_steps,
         );
-        let reconstructor = Reconstructor::new(Quantizer::new(config.quantize_bits, config.dynamic_gamma));
+        let reconstructor =
+            Reconstructor::new(Quantizer::new(config.quantize_bits, config.dynamic_gamma));
 
         Self {
             config,
@@ -116,7 +117,8 @@ impl NangilaState {
             self.reconstructor
                 .reconstruct_driver(layer_id, compressed, &self.predictor)?
         } else {
-            self.reconstructor.synthesize_passenger(layer_id, &self.mask)?
+            self.reconstructor
+                .synthesize_passenger(layer_id, &self.mask)?
         };
 
         Ok(gradient)
@@ -208,8 +210,15 @@ impl NangilaState {
     /// Enable Safe Mode convergence monitoring
     pub fn enable_safe_mode(&mut self, config: SafeModeConfig) {
         self.safe_mode = Some(SafeMode::new(config));
-        tracing::info!("Safe Mode enabled with divergence threshold {:.2}%",
-            self.safe_mode.as_ref().unwrap().stats().baseline_loss.unwrap_or(0.0) * 100.0
+        tracing::info!(
+            "Safe Mode enabled with divergence threshold {:.2}%",
+            self.safe_mode
+                .as_ref()
+                .unwrap()
+                .stats()
+                .baseline_loss
+                .unwrap_or(0.0)
+                * 100.0
         );
     }
 

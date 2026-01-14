@@ -9,8 +9,7 @@
 
 use crate::NangilaHook;
 use nangila_core::{
-    bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16,
-    DataType, NangilaConfig, Tensor, TopologyMask,
+    bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16, DataType, NangilaConfig, Tensor, TopologyMask,
 };
 use std::ffi::{c_char, CStr};
 use std::fs::File;
@@ -108,7 +107,11 @@ pub unsafe extern "C" fn nangila_compress(
     out_compressed: *mut u8,
     out_compressed_size: *mut usize,
 ) -> i32 {
-    if handle.is_null() || sendbuff.is_null() || out_compressed.is_null() || out_compressed_size.is_null() {
+    if handle.is_null()
+        || sendbuff.is_null()
+        || out_compressed.is_null()
+        || out_compressed_size.is_null()
+    {
         return NangilaResult::InvalidPointer as i32;
     }
 
@@ -235,7 +238,11 @@ pub unsafe extern "C" fn nangila_is_enabled(handle: NangilaHandle) -> i32 {
     }
 
     let hook = &*handle;
-    if hook.is_compression_enabled() { 1 } else { 0 }
+    if hook.is_compression_enabled() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Get current step number
@@ -307,7 +314,11 @@ pub unsafe extern "C" fn nangila_compress_ex(
     out_compressed: *mut u8,
     out_compressed_size: *mut usize,
 ) -> i32 {
-    if handle.is_null() || sendbuff.is_null() || out_compressed.is_null() || out_compressed_size.is_null() {
+    if handle.is_null()
+        || sendbuff.is_null()
+        || out_compressed.is_null()
+        || out_compressed_size.is_null()
+    {
         return NangilaResult::InvalidPointer as i32;
     }
 

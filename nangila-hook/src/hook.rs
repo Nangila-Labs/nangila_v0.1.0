@@ -9,8 +9,8 @@
 //! - Desync detection and FORCE_SYNC recovery
 
 use nangila_core::{
-    compute_crc32, verify_crc32, CompressedTensor, CompressionResult, GradientHistory,
-    LayerId, NangilaConfig, NangilaState, Packet, PacketHeader, Tensor, TopologyMask,
+    compute_crc32, verify_crc32, CompressedTensor, CompressionResult, GradientHistory, LayerId,
+    NangilaConfig, NangilaState, Packet, PacketHeader, Tensor, TopologyMask,
 };
 use std::collections::HashMap;
 use std::fs::File;
@@ -101,17 +101,14 @@ impl NangilaHook {
         }
 
         // Store in history for potential rewind
-        let fixed_buf =
-            nangila_core::FixedPointBuffer::from_f32_slice(&gradient.data);
+        let fixed_buf = nangila_core::FixedPointBuffer::from_f32_slice(&gradient.data);
         self.gradient_history.push(layer_id, fixed_buf);
 
         match self.state.compress(layer_id, &gradient) {
             Ok(CompressionResult::Driver(compressed)) => {
                 self.create_driver_packet(layer_id, &compressed)
             }
-            Ok(CompressionResult::Passenger) => {
-                self.create_passenger_packet(layer_id)
-            }
+            Ok(CompressionResult::Passenger) => self.create_passenger_packet(layer_id),
             Ok(CompressionResult::Passthrough(grad)) => {
                 self.passthrough_buffer.insert(layer_id, grad.clone());
                 self.create_passthrough_packet(layer_id, &grad)
@@ -176,7 +173,8 @@ impl NangilaHook {
             // Skip stale packets
             return self.recover_from_history(layer_id);
         }
-        self.expected_peer_step.insert(layer_id, packet.header.step as u64 + 1);
+        self.expected_peer_step
+            .insert(layer_id, packet.header.step as u64 + 1);
 
         // Handle FORCE_SYNC
         if packet.header.is_force_sync() {
@@ -284,7 +282,10 @@ impl NangilaHook {
     }
 
     fn reconstruct_passenger(&mut self, layer_id: LayerId) -> Tensor {
-        match self.state.decompress(layer_id, &CompressedTensor::default()) {
+        match self
+            .state
+            .decompress(layer_id, &CompressedTensor::default())
+        {
             Ok(grad) => grad,
             Err(e) => {
                 tracing::warn!("Synthesis error for layer {}: {}", layer_id, e);
@@ -299,7 +300,9 @@ impl NangilaHook {
         let gradient = self.deserialize_tensor_payload(&packet.payload);
 
         // Reset predictor state for this layer with the synced gradient
-        self.state.predictor_mut().force_sync_layer(layer_id, &gradient);
+        self.state
+            .predictor_mut()
+            .force_sync_layer(layer_id, &gradient);
 
         // Clear recovery mode
         self.recovery_mode.insert(layer_id, RecoveryMode::Normal);
@@ -447,9 +450,6 @@ mod tests {
         let mut hook = NangilaHook::all_drivers(1);
 
         hook.trigger_recovery(0);
-        assert_eq!(
-            hook.recovery_mode.get(&0),
-            Some(&RecoveryMode::Pending)
-        );
+        assert_eq!(hook.recovery_mode.get(&0), Some(&RecoveryMode::Pending));
     }
 }

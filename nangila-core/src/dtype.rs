@@ -49,10 +49,15 @@ mod tests {
         let original = vec![1.0f32, -2.5, 3.14159, 0.0, 100.0];
         let f16_bytes = f32_to_f16(&original);
         let recovered = f16_to_f32(&f16_bytes);
-        
+
         // FP16 has limited precision, check within tolerance
         for (a, b) in original.iter().zip(recovered.iter()) {
-            assert!((a - b).abs() < 0.01, "FP16 roundtrip failed: {} vs {}", a, b);
+            assert!(
+                (a - b).abs() < 0.01,
+                "FP16 roundtrip failed: {} vs {}",
+                a,
+                b
+            );
         }
     }
 
@@ -61,7 +66,7 @@ mod tests {
         let original = vec![1.0f32, -2.5, 3.14159, 0.0, 100.0];
         let bf16_bytes = f32_to_bf16(&original);
         let recovered = bf16_to_f32(&bf16_bytes);
-        
+
         // BF16 has even more limited precision (7 bits mantissa)
         for (a, b) in original.iter().zip(recovered.iter()) {
             assert!((a - b).abs() < 0.1, "BF16 roundtrip failed: {} vs {}", a, b);
@@ -73,7 +78,7 @@ mod tests {
         let values = vec![f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0];
         let f16_bytes = f32_to_f16(&values);
         let recovered = f16_to_f32(&f16_bytes);
-        
+
         assert!(recovered[0].is_infinite() && recovered[0] > 0.0);
         assert!(recovered[1].is_infinite() && recovered[1] < 0.0);
         assert_eq!(recovered[2], 0.0);

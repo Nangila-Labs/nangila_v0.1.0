@@ -49,7 +49,11 @@ impl LayerStats {
     }
 
     fn std_dev(&self) -> f32 {
-        self.variance().iter().map(|v| v.max(0.0)).sum::<f32>().sqrt()
+        self.variance()
+            .iter()
+            .map(|v| v.max(0.0))
+            .sum::<f32>()
+            .sqrt()
     }
 }
 
@@ -202,9 +206,7 @@ impl Sculptor {
         // Sort layers by their gradient variance (higher variance = more likely to be Driver)
         let mut layer_variances: Vec<(LayerId, f32)> = layer_ids
             .iter()
-            .filter_map(|&id| {
-                self.stats.get(&id).map(|s| (id, s.std_dev()))
-            })
+            .filter_map(|&id| self.stats.get(&id).map(|s| (id, s.std_dev())))
             .collect();
         layer_variances.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -334,11 +336,7 @@ mod tests {
         }
 
         let corr = sculptor.compute_correlation(0, 1).unwrap();
-        assert!(
-            corr > 0.99,
-            "Expected high correlation, got {}",
-            corr
-        );
+        assert!(corr > 0.99, "Expected high correlation, got {}", corr);
     }
 
     #[test]
@@ -350,7 +348,8 @@ mod tests {
             let base = (step as f32).sin();
             sculptor.record(0, &make_tensor(&[base, base * 2.0]));
             sculptor.record(1, &make_tensor(&[base * 0.8, base * 1.6])); // Correlated
-            sculptor.record(2, &make_tensor(&[(step as f32).cos(), step as f32])); // Uncorrelated
+            sculptor.record(2, &make_tensor(&[(step as f32).cos(), step as f32]));
+            // Uncorrelated
         }
 
         let mask = sculptor.generate_mask().unwrap();
