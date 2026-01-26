@@ -120,12 +120,7 @@ extern "C" {
     );
 
     /// Launch CRC32 kernel
-    pub fn launch_compute_crc32(
-        data: *const u8,
-        len: usize,
-        out_crc: *mut u32,
-        stream: CudaStream,
-    );
+    pub fn launch_compute_crc32(data: *const u8, len: usize, out_crc: *mut u32, stream: CudaStream);
 
     /// Async copy from device to host (or device to device)
     pub fn cudaMemcpyAsync(
@@ -142,7 +137,6 @@ pub const cudaMemcpyHostToDevice: i32 = 1;
 pub const cudaMemcpyDeviceToHost: i32 = 2;
 pub const cudaMemcpyDeviceToDevice: i32 = 3;
 pub const cudaMemcpyDefault: i32 = 4;
-
 
 /// Check for CUDA errors after kernel launch
 #[cfg(feature = "cuda")]
@@ -192,22 +186,22 @@ pub unsafe fn predict_and_quantize_cuda(
     if gradient.is_null() || g_current.is_null() || g_previous.is_null() || output.is_null() {
         return Err(CudaError::InvalidValue);
     }
-    
+
     if n == 0 || n > 1_000_000_000 {
         return Err(CudaError::InvalidValue);
     }
-    
+
     // Guard against invalid gamma
     let safe_gamma = gamma.max(1e-8).min(1e6);
     if !safe_gamma.is_finite() {
         return Err(CudaError::InvalidValue);
     }
-    
+
     // Validate momentum
     if momentum < 0.0 || momentum > 1.0 || !momentum.is_finite() {
         return Err(CudaError::InvalidValue);
     }
-    
+
     let result = launch_predict_subtract_quantize(
         gradient,
         g_current,
@@ -221,7 +215,7 @@ pub unsafe fn predict_and_quantize_cuda(
         step,
         layer_id,
     );
-    
+
     let error = CudaError::from_code(result);
     if error.is_success() {
         Ok(())
@@ -264,22 +258,22 @@ pub unsafe fn dequantize_and_reconstruct_cuda(
     if packed.is_null() || g_current.is_null() || g_previous.is_null() || output.is_null() {
         return Err(CudaError::InvalidValue);
     }
-    
+
     if n == 0 || n > 1_000_000_000 {
         return Err(CudaError::InvalidValue);
     }
-    
+
     // Guard against invalid gamma
     let safe_gamma = gamma.max(1e-8).min(1e6);
     if !safe_gamma.is_finite() {
         return Err(CudaError::InvalidValue);
     }
-    
+
     // Validate momentum
     if momentum < 0.0 || momentum > 1.0 || !momentum.is_finite() {
         return Err(CudaError::InvalidValue);
     }
-    
+
     let result = launch_dequantize_add_reconstruct(
         packed,
         g_current,
@@ -291,7 +285,7 @@ pub unsafe fn dequantize_and_reconstruct_cuda(
         stream,
         sync_mode as i32,
     );
-    
+
     let error = CudaError::from_code(result);
     if error.is_success() {
         Ok(())
@@ -391,7 +385,7 @@ pub unsafe fn copy_device_to_host_async(
         cudaMemcpyDeviceToHost,
         stream,
     );
-     // cudaMemcpyAsync returns cudaError_t directly
+    // cudaMemcpyAsync returns cudaError_t directly
     let error = CudaError::from_code(result);
     if error.is_success() {
         Ok(())

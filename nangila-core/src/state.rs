@@ -44,22 +44,28 @@ impl LayerTelemetry {
             passenger_skip_count: 0,
         }
     }
-    
-    fn record_compression(&mut self, original_bytes: usize, compressed_bytes: usize, prediction_error: f32) {
+
+    fn record_compression(
+        &mut self,
+        original_bytes: usize,
+        compressed_bytes: usize,
+        prediction_error: f32,
+    ) {
         self.total_original_bytes += original_bytes as u64;
         self.total_compressed_bytes += compressed_bytes as u64;
         self.compression_count += 1;
-        
+
         let ratio = original_bytes as f32 / compressed_bytes.max(1) as f32;
         self.min_compression_ratio = self.min_compression_ratio.min(ratio);
         self.max_compression_ratio = self.max_compression_ratio.max(ratio);
-        
+
         // Update running average
         let alpha = 0.1; // EMA smoothing
         self.avg_compression_ratio = alpha * ratio + (1.0 - alpha) * self.avg_compression_ratio;
-        self.avg_prediction_error = alpha * prediction_error + (1.0 - alpha) * self.avg_prediction_error;
+        self.avg_prediction_error =
+            alpha * prediction_error + (1.0 - alpha) * self.avg_prediction_error;
     }
-    
+
     fn record_passenger_skip(&mut self) {
         self.passenger_skip_count += 1;
     }
@@ -159,7 +165,7 @@ impl NangilaState {
         // Driver: compute residual and quantize
         let prediction = self.predictor.predict(layer_id)?;
         let residual = gradient.sub(&prediction);
-        
+
         // Compute prediction error for telemetry
         let grad_norm = gradient.norm();
         let residual_norm = residual.norm();
@@ -168,12 +174,14 @@ impl NangilaState {
         } else {
             0.0
         };
-        
+
         // Record error for adaptive momentum
         self.predictor.record_error(layer_id, prediction_error);
 
-        let compressed = self.quantizer.quantize(&residual, layer_id, self.step as u64);
-        
+        let compressed = self
+            .quantizer
+            .quantize(&residual, layer_id, self.step as u64);
+
         // Record telemetry
         let original_bytes = gradient.numel() * 4; // FP32
         let compressed_bytes = compressed.size_bytes();
@@ -323,17 +331,17 @@ impl NangilaState {
             quantizer_gamma: self.quantizer.gamma(),
         }
     }
-    
+
     /// Get per-layer telemetry
     pub fn layer_telemetry(&self, layer_id: LayerId) -> Option<&LayerTelemetry> {
         self.layer_telemetry.get(&layer_id)
     }
-    
+
     /// Get all layer telemetry
     pub fn all_layer_telemetry(&self) -> &HashMap<LayerId, LayerTelemetry> {
         &self.layer_telemetry
     }
-    
+
     /// Get summary telemetry across all layers
     pub fn summary_telemetry(&self) -> SummaryTelemetry {
         let mut total_original = 0u64;
@@ -342,7 +350,7 @@ impl NangilaState {
         let mut total_passenger_skips = 0u64;
         let mut avg_prediction_error = 0.0f32;
         let mut count = 0;
-        
+
         for telemetry in self.layer_telemetry.values() {
             total_original += telemetry.total_original_bytes;
             total_compressed += telemetry.total_compressed_bytes;
@@ -353,19 +361,19 @@ impl NangilaState {
                 count += 1;
             }
         }
-        
+
         let overall_ratio = if total_compressed > 0 {
             total_original as f32 / total_compressed as f32
         } else {
             1.0
         };
-        
+
         let avg_error = if count > 0 {
             avg_prediction_error / count as f32
         } else {
             0.0
         };
-        
+
         SummaryTelemetry {
             total_original_bytes: total_original,
             total_compressed_bytes: total_compressed,

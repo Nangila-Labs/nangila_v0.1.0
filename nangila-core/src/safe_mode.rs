@@ -46,7 +46,7 @@ impl SafeModeConfig {
             divergence_threshold: 0.003, // 0.3%
             max_consecutive_failures: 2,
             recovery_cooldown: 1000,
-            canary_fraction: 0.05,  // 5% of layers
+            canary_fraction: 0.05, // 5% of layers
             canary_steps: 200,
             canary_max_failures: 1,
         }
@@ -59,7 +59,7 @@ impl SafeModeConfig {
             divergence_threshold: 0.01, // 1%
             max_consecutive_failures: 5,
             recovery_cooldown: 200,
-            canary_fraction: 0.2,   // 20% of layers
+            canary_fraction: 0.2, // 20% of layers
             canary_steps: 50,
             canary_max_failures: 3,
         }
@@ -133,8 +133,8 @@ impl SafeMode {
             last_loss: None,
             ema_loss_short: None,
             ema_loss_long: None,
-            ema_alpha_short: 0.3,  // Fast response to changes
-            ema_alpha_long: 0.05,  // Slow, stable baseline
+            ema_alpha_short: 0.3, // Fast response to changes
+            ema_alpha_long: 0.05, // Slow, stable baseline
             failure_count: 0,
             cooldown_remaining: 0,
             last_check_step: 0,
@@ -160,7 +160,7 @@ impl SafeMode {
             Some(ema) => self.ema_alpha_long * val_loss + (1.0 - self.ema_alpha_long) * ema,
             None => val_loss,
         });
-        
+
         self.last_loss = Some(val_loss);
         self.last_check_step = step;
 
@@ -177,7 +177,7 @@ impl SafeMode {
         // Compare short-term EMA to long-term EMA (not fixed baseline)
         let ema_long = self.ema_loss_long.unwrap_or(val_loss);
         let ema_short = self.ema_loss_short.unwrap_or(val_loss);
-        
+
         // Divergence = short-term trending worse than long-term
         let delta = (ema_short - ema_long) / ema_long.abs().max(1e-6);
 
@@ -192,8 +192,10 @@ impl SafeMode {
             }
         } else {
             self.failure_count = 0;
-            self.cooldown_remaining = self.cooldown_remaining.saturating_sub(self.config.check_interval);
-            
+            self.cooldown_remaining = self
+                .cooldown_remaining
+                .saturating_sub(self.config.check_interval);
+
             // Canary succeeded for long enough - go fully active
             if self.cooldown_remaining == 0 {
                 tracing::info!("Safe Mode: canary successful, enabling full compression");
@@ -224,7 +226,7 @@ impl SafeMode {
         // Divergence = short-term trending significantly worse than long-term
         let ema_long = self.ema_loss_long.unwrap_or(baseline);
         let ema_short = self.ema_loss_short.unwrap_or(val_loss);
-        
+
         let delta = (ema_short - ema_long) / ema_long.abs().max(1e-6);
 
         if delta > self.config.divergence_threshold {
@@ -264,7 +266,7 @@ impl SafeMode {
         // Compare short-term to long-term EMA
         let ema_long = self.ema_loss_long.unwrap_or(val_loss);
         let ema_short = self.ema_loss_short.unwrap_or(val_loss);
-        
+
         let delta = (ema_short - ema_long) / ema_long.abs().max(1e-6);
 
         // Look for stability (short-term not diverging from long-term)
@@ -371,7 +373,7 @@ mod tests {
         safe.check(100, 1.0);
         safe.check(200, 1.0);
         safe.check(300, 1.0);
-        
+
         // Baseline should be established from long-term EMA
         assert!(safe.baseline_loss.is_some());
     }
@@ -394,7 +396,7 @@ mod tests {
         for i in 10..15 {
             safe.check(i * 100, 1.5); // 50% higher
         }
-        
+
         // Should eventually trigger fallback
         assert!(!safe.should_compress());
     }
@@ -428,7 +430,7 @@ mod tests {
         for i in 15..20 {
             safe.check(i * 50, 1.0);
         }
-        
+
         // Should eventually recover
         assert!(matches!(
             safe.state(),
@@ -449,7 +451,7 @@ mod tests {
         for i in 0..10 {
             safe.check(i * 100, 1.0);
         }
-        
+
         // Spike then recover
         safe.check(1000, 1.5); // Spike
         safe.check(1100, 1.5); // Still high

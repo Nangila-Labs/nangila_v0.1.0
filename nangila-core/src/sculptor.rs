@@ -119,21 +119,21 @@ impl StreamingCorrelation {
 
         self.count += 1;
         let n = self.count as f64;
-        
+
         // Welford's online covariance algorithm (element-wise)
         for idx in 0..self.size {
             let val_i = grad_i[idx] as f64;
             let val_j = grad_j[idx] as f64;
-            
+
             let delta_i = val_i - self.mean_i[idx];
             let delta_j = val_j - self.mean_j[idx];
-            
+
             self.mean_i[idx] += delta_i / n;
             self.mean_j[idx] += delta_j / n;
-            
+
             let delta2_i = val_i - self.mean_i[idx];
             let delta2_j = val_j - self.mean_j[idx];
-            
+
             self.m2_i[idx] += delta_i * delta2_i;
             self.m2_j[idx] += delta_j * delta2_j;
             self.co_moment[idx] += delta_i * delta2_j;
@@ -145,26 +145,26 @@ impl StreamingCorrelation {
         if self.count < 2 {
             return None;
         }
-        
+
         let mut sum_corr = 0.0;
         let mut valid_count = 0;
-        
+
         for idx in 0..self.size {
             let var_i = self.m2_i[idx] / (self.count - 1) as f64;
             let var_j = self.m2_j[idx] / (self.count - 1) as f64;
             let cov = self.co_moment[idx] / (self.count - 1) as f64;
-            
+
             let denom = (var_i * var_j).sqrt();
             if denom > 1e-10 {
                 sum_corr += cov / denom;
                 valid_count += 1;
             }
         }
-        
+
         if valid_count == 0 {
             return None;
         }
-        
+
         Some((sum_corr / valid_count as f64) as f32)
     }
 }
@@ -204,7 +204,7 @@ impl Sculptor {
             sampling_strategy: SamplingStrategy::default(),
         }
     }
-    
+
     /// Create a Sculptor optimized for large models (>100 layers)
     pub fn new_large_model(threshold: f32, num_layers: usize) -> Self {
         let strategy = if num_layers < 100 {
@@ -214,7 +214,7 @@ impl Sculptor {
         } else {
             SamplingStrategy::KNearestNeighbors { k: 10 }
         };
-        
+
         Self {
             threshold,
             stats: HashMap::new(),
@@ -226,7 +226,7 @@ impl Sculptor {
             sampling_strategy: strategy,
         }
     }
-    
+
     /// Set the sampling strategy explicitly
     pub fn with_sampling_strategy(mut self, strategy: SamplingStrategy) -> Self {
         self.sampling_strategy = strategy;
@@ -242,19 +242,20 @@ impl Sculptor {
     pub fn record(&mut self, layer_id: LayerId, gradient: &Tensor) {
         let size = gradient.numel();
         self.layer_sizes.insert(layer_id, size);
-        
+
         // Compute L2 norm for variance tracking
         let sum_sq: f64 = gradient.data.iter().map(|&x| (x as f64) * (x as f64)).sum();
         let l2_norm = sum_sq.sqrt();
-        
+
         // Update per-layer streaming stats
         self.stats
             .entry(layer_id)
             .or_insert_with(StreamingStats::new)
             .update(l2_norm);
-        
+
         // Buffer gradient for pairwise correlation update
-        self.current_gradients.insert(layer_id, gradient.data.clone());
+        self.current_gradients
+            .insert(layer_id, gradient.data.clone());
     }
 
     /// Finalize a calibration step (call after recording all layers for a step)
@@ -263,7 +264,7 @@ impl Sculptor {
         let mut layer_ids: Vec<LayerId> = self.current_gradients.keys().copied().collect();
         // Sort for deterministic ordering
         layer_ids.sort();
-        
+
         match self.sampling_strategy {
             SamplingStrategy::Full => {
                 self.end_step_full(&layer_ids);
@@ -278,12 +279,12 @@ impl Sculptor {
                 self.end_step_hierarchical(&layer_ids, max_cluster_size);
             }
         }
-        
+
         // Clear buffer for next step
         self.current_gradients.clear();
         self.step_count += 1;
     }
-    
+
     /// Full O(n²) correlation computation (for small models)
     fn end_step_full(&mut self, layer_ids: &[LayerId]) {
         for (i, &id_i) in layer_ids.iter().enumerate() {
@@ -292,7 +293,7 @@ impl Sculptor {
             }
         }
     }
-    
+
     /// K-nearest neighbors by gradient magnitude (O(n log n))
     fn end_step_knn(&mut self, layer_ids: &[LayerId], k: usize) {
         // Compute L2 norms for all layers
@@ -300,20 +301,24 @@ impl Sculptor {
             .iter()
             .filter_map(|&id| {
                 let grad = self.current_gradients.get(&id)?;
-                let norm: f64 = grad.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>().sqrt();
+                let norm: f64 = grad
+                    .iter()
+                    .map(|&x| (x as f64) * (x as f64))
+                    .sum::<f64>()
+                    .sqrt();
                 Some((id, norm))
             })
             .collect();
-        
+
         // Sort by norm
         layer_norms.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        
+
         // For each layer, correlate with k nearest neighbors by norm
         for (idx, &(id_i, _)) in layer_norms.iter().enumerate() {
             // Look at k neighbors before and after
             let start = idx.saturating_sub(k / 2);
             let end = (idx + k / 2 + 1).min(layer_norms.len());
-            
+
             for &(id_j, _) in &layer_norms[start..end] {
                 if id_i != id_j {
                     self.update_correlation_pair(id_i, id_j);
@@ -321,19 +326,19 @@ impl Sculptor {
             }
         }
     }
-    
+
     /// Random sampling of pairs (O(n))
     fn end_step_random(&mut self, layer_ids: &[LayerId], pairs_per_layer: usize) {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         for &id_i in layer_ids {
             // Use deterministic "random" sampling based on step and layer id
             let mut hasher = DefaultHasher::new();
             id_i.hash(&mut hasher);
             self.step_count.hash(&mut hasher);
             let seed = hasher.finish();
-            
+
             // Select pairs_per_layer random partners
             for j in 0..pairs_per_layer {
                 let partner_idx = ((seed.wrapping_add(j as u64)) as usize) % layer_ids.len();
@@ -344,18 +349,18 @@ impl Sculptor {
             }
         }
     }
-    
+
     /// Hierarchical clustering (O(n log n))
     fn end_step_hierarchical(&mut self, layer_ids: &[LayerId], max_cluster_size: usize) {
         // Simple hierarchical approach: group by size, then correlate within groups
         let mut size_groups: HashMap<usize, Vec<LayerId>> = HashMap::new();
-        
+
         for &id in layer_ids {
             if let Some(size) = self.layer_sizes.get(&id) {
                 size_groups.entry(*size).or_insert_with(Vec::new).push(id);
             }
         }
-        
+
         // Within each size group, do full correlation if small, or sample if large
         for group in size_groups.values() {
             if group.len() <= max_cluster_size {
@@ -380,7 +385,7 @@ impl Sculptor {
             }
         }
     }
-    
+
     /// Helper to update a single correlation pair
     fn update_correlation_pair(&mut self, id_i: LayerId, id_j: LayerId) {
         let grad_i = match self.current_gradients.get(&id_i) {
@@ -391,16 +396,20 @@ impl Sculptor {
             Some(g) => g,
             None => return,
         };
-        
+
         // Only correlate layers with same size
         if grad_i.len() != grad_j.len() {
             return;
         }
-        
+
         let size = grad_i.len();
         // Ensure key is always (min, max)
-        let key = if id_i < id_j { (id_i, id_j) } else { (id_j, id_i) };
-        
+        let key = if id_i < id_j {
+            (id_i, id_j)
+        } else {
+            (id_j, id_i)
+        };
+
         self.correlations
             .entry(key)
             .or_insert_with(|| StreamingCorrelation::new(size))
@@ -415,7 +424,7 @@ impl Sculptor {
         } else {
             (layer_j, layer_i)
         };
-        
+
         self.correlations.get(&key)?.correlation()
     }
 
@@ -426,29 +435,29 @@ impl Sculptor {
         } else {
             (passenger_id, driver_id)
         };
-        
+
         let corr = self.correlations.get(&key)?;
-        
+
         if corr.count < 2 {
             return None;
         }
-        
+
         // Compute element-wise regression, then average
         let mut sum_alpha = 0.0;
         let mut sum_beta = 0.0;
         let mut valid_count = 0;
-        
+
         // Determine which is i (driver) and which is j (passenger)
         let (mean_driver, mean_passenger, m2_driver, co_moment) = if driver_id < passenger_id {
             (&corr.mean_i, &corr.mean_j, &corr.m2_i, &corr.co_moment)
         } else {
             (&corr.mean_j, &corr.mean_i, &corr.m2_j, &corr.co_moment)
         };
-        
+
         for idx in 0..corr.size {
             let var_driver = m2_driver[idx] / (corr.count - 1) as f64;
             let cov = co_moment[idx] / (corr.count - 1) as f64;
-            
+
             if var_driver > 1e-10 {
                 let alpha = cov / var_driver;
                 let beta = mean_passenger[idx] - alpha * mean_driver[idx];
@@ -457,17 +466,16 @@ impl Sculptor {
                 valid_count += 1;
             }
         }
-        
+
         if valid_count == 0 {
             return None;
         }
-        
+
         Some((
             (sum_alpha / valid_count as f64) as f32,
             (sum_beta / valid_count as f64) as f32,
         ))
     }
-
 
     /// Generate the topology mask from recorded gradients
     pub fn generate_mask(&self) -> Result<TopologyMask> {
@@ -478,7 +486,7 @@ impl Sculptor {
                  Correlations are NOT computed. Call end_step() after each calibration step."
             );
         }
-        
+
         let layer_ids: Vec<LayerId> = self.stats.keys().copied().collect();
 
         if layer_ids.len() < 2 {
@@ -509,7 +517,7 @@ impl Sculptor {
                     continue;
                 }
 
-            if let Some(corr) = self.compute_correlation(*layer_id, existing_id) {
+                if let Some(corr) = self.compute_correlation(*layer_id, existing_id) {
                     if corr.abs() > self.threshold {
                         if let Some((alpha, beta)) = self.coupling(existing_id, *layer_id) {
                             if best_driver

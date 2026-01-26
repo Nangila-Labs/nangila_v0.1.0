@@ -98,10 +98,10 @@ impl Quantizer {
     }
 
     /// Quantize a tensor to INT4
-    /// 
-    /// layer_id and step ensure deterministic RNG across all ranks - 
+    ///
+    /// layer_id and step ensure deterministic RNG across all ranks -
     /// this is CRITICAL for gradient consensus in distributed training.
-    /// 
+    ///
     /// global_offset: Starting index of this tensor in the global parameter space.
     /// For DDP (full replication), this is always 0.
     /// For FSDP (sharding), this is the shard's starting index in the full parameter.
@@ -163,7 +163,7 @@ impl Quantizer {
                     // This ensures that element at global position N gets the same
                     // random value regardless of which rank owns it
                     let global_idx = global_offset + local_idx;
-                    
+
                     // Use cheap hash for reproducible randomness
                     // hash_base includes layer_id + step (same across all ranks)
                     // Adding seed and GLOBAL element index for full determinism
@@ -176,11 +176,19 @@ impl Quantizer {
                     let hash = hash ^ (hash >> 27);
                     let hash = hash.wrapping_mul(0x94D049BB133111EB);
                     let random_01 = (hash as f32) / (u64::MAX as f32);
-                    
+
                     if frac >= random_01 {
-                        if scaled >= 0.0 { (floor + 1.0) as i8 } else { floor as i8 }
+                        if scaled >= 0.0 {
+                            (floor + 1.0) as i8
+                        } else {
+                            floor as i8
+                        }
                     } else {
-                        if scaled >= 0.0 { floor as i8 } else { (floor + 1.0) as i8 }
+                        if scaled >= 0.0 {
+                            floor as i8
+                        } else {
+                            (floor + 1.0) as i8
+                        }
                     }
                 } else {
                     // Deterministic rounding (fallback)
@@ -279,26 +287,26 @@ impl Quantizer {
         let numel = compressed.numel;
         let start = start_index.min(numel);
         let end = end_index.min(numel);
-        
+
         if start >= end {
             return Tensor::zeros(vec![0]);
         }
 
         let output_len = end - start;
-        
+
         // Calculate byte offsets
-        // Each byte holds 2 values. 
+        // Each byte holds 2 values.
         // Index i is at byte i/2.
         // If i is even, it's the low nibble. If odd, high nibble.
-        
+
         let byte_start = start / 2;
         let byte_end = (end + 1) / 2; // +1 to cover the last element if it's the first in a byte
         let byte_end = byte_end.min(compressed.data.len());
 
         let relevant_bytes = &compressed.data[byte_start..byte_end];
-        
+
         let mut values = Vec::with_capacity(output_len);
-        
+
         for (i, &byte) in relevant_bytes.iter().enumerate() {
             let global_byte_idx = byte_start + i;
             let val_idx_base = global_byte_idx * 2;
@@ -313,9 +321,9 @@ impl Quantizer {
             // High nibble (1st in byte, odd index)
             let val_idx_next = val_idx_base + 1;
             if val_idx_next >= start && val_idx_next < end {
-                 let high = ((byte >> 4) & 0x0F) as i8;
-                 let high = if high & 0x08 != 0 { high | !0x0F } else { high };
-                 values.push(high as f32 * compressed.gamma);
+                let high = ((byte >> 4) & 0x0F) as i8;
+                let high = if high & 0x08 != 0 { high | !0x0F } else { high };
+                values.push(high as f32 * compressed.gamma);
             }
         }
 

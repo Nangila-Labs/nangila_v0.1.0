@@ -23,28 +23,30 @@ impl PySyncMode {
     /// Async: No synchronization, maximum performance (production)
     #[classattr]
     const ASYNC: i32 = 0;
-    
+
     /// Always: Always synchronize, catch all errors immediately (debug)
     #[classattr]
     const ALWAYS: i32 = 1;
-    
+
     /// Periodic: Synchronize every 100 calls, balanced approach (default)
     #[classattr]
     const PERIODIC: i32 = 2;
-    
+
     #[new]
     fn new(mode: i32) -> PyResult<Self> {
         let inner = match mode {
             0 => nangila_cuda::SyncMode::Async,
             1 => nangila_cuda::SyncMode::Always,
             2 => nangila_cuda::SyncMode::Periodic,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                "Invalid sync mode. Use SyncMode.ASYNC (0), ALWAYS (1), or PERIODIC (2)"
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "Invalid sync mode. Use SyncMode.ASYNC (0), ALWAYS (1), or PERIODIC (2)",
+                ))
+            }
         };
         Ok(Self { inner })
     }
-    
+
     fn __repr__(&self) -> String {
         match self.inner {
             nangila_cuda::SyncMode::Async => "SyncMode.ASYNC".to_string(),
@@ -224,7 +226,7 @@ impl PyNangilaHook {
         let bytes = self.inner.on_send(layer_id, tensor);
         PyBytes::new_bound(py, &bytes)
     }
-    
+
     /// Compress a gradient tensor on GPU (returns GPU tensor of compressed bytes)
     #[cfg(feature = "cuda")]
     #[pyo3(signature = (layer_id, gradient, sync_mode=2))]
@@ -239,7 +241,7 @@ impl PyNangilaHook {
         let data_ptr: u64 = gradient.getattr("data_ptr")?.call0()?.extract()?;
         let numel: usize = gradient.getattr("numel")?.call0()?.extract()?;
         let device = gradient.getattr("device")?;
-        
+
         // Get CUDA stream (0 = default stream)
         let stream_ptr: u64 = 0;
         let stream = if stream_ptr == 0 {
@@ -247,21 +249,22 @@ impl PyNangilaHook {
         } else {
             stream_ptr as *mut std::ffi::c_void
         };
-        
+
         // Call GPU-native compression
         unsafe {
-            let output_ptr = self.inner.on_send_gpu(
-                layer_id,
-                data_ptr as *const f32,
-                numel,
-                stream,
-            ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
-                format!("GPU compression failed: {}", e)
-            ))?;
-            
+            let output_ptr = self
+                .inner
+                .on_send_gpu(layer_id, data_ptr as *const f32, numel, stream)
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "GPU compression failed: {}",
+                        e
+                    ))
+                })?;
+
             // Import torch
             let torch = py.import_bound("torch")?;
-            
+
             // Wrap output pointer in a torch tensor
             // For now, return a uint8 tensor of appropriate size
             let output_size = numel / 2 + 128;
@@ -270,11 +273,11 @@ impl PyNangilaHook {
                 .call1(((output_size,),))?
                 .call_method1("to", (device,))?
                 .call_method1("to", (torch.getattr("uint8")?,))?;
-            
+
             Ok(output.into())
         }
     }
-    
+
     /// Decompress on GPU (returns GPU tensor)
     #[cfg(feature = "cuda")]
     #[pyo3(signature = (layer_id, compressed, output_size, sync_mode=2))]
@@ -288,30 +291,35 @@ impl PyNangilaHook {
     ) -> PyResult<PyObject> {
         // compressed is a torch.Tensor (uint8) on GPU
         // output_size is the expected number of elements
-        
+
         let device = compressed.getattr("device")?;
-        
+
         // Import torch
         let torch = py.import_bound("torch")?;
-        
+
         // Create output tensor on same device
         let output = torch
             .getattr("empty")?
             .call1(((output_size,),))?
             .call_method1("to", (device,))?
             .call_method1("to", (torch.getattr("float32")?,))?;
-        
+
         Ok(output.into())
     }
-    
+
     /// Update predictor state on GPU (async)
     #[cfg(feature = "cuda")]
     #[pyo3(signature = (layer_id, gradient, sync_mode=2))]
-    fn update_gpu<'py>(&mut self, layer_id: u32, gradient: &Bound<'py, PyAny>, sync_mode: i32) -> PyResult<()> {
+    fn update_gpu<'py>(
+        &mut self,
+        layer_id: u32,
+        gradient: &Bound<'py, PyAny>,
+        sync_mode: i32,
+    ) -> PyResult<()> {
         // Get tensor properties
         let data_ptr: u64 = gradient.getattr("data_ptr")?.call0()?.extract()?;
         let numel: usize = gradient.getattr("numel")?.call0()?.extract()?;
-        
+
         // Get CUDA stream (0 = default stream)
         let stream_ptr: u64 = 0;
         let stream = if stream_ptr == 0 {
@@ -319,19 +327,19 @@ impl PyNangilaHook {
         } else {
             stream_ptr as *mut std::ffi::c_void
         };
-        
+
         // Call GPU-native state update
         unsafe {
-            self.inner.on_complete_gpu(
-                layer_id,
-                data_ptr as *const f32,
-                numel,
-                stream,
-            ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
-                format!("GPU state update failed: {}", e)
-            ))?;
+            self.inner
+                .on_complete_gpu(layer_id, data_ptr as *const f32, numel, stream)
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "GPU state update failed: {}",
+                        e
+                    ))
+                })?;
         }
-        
+
         Ok(())
     }
 
@@ -401,9 +409,13 @@ impl PyNangilaHook {
     fn set_hash_verify_interval(&mut self, interval: u64) {
         self.inner.set_hash_verify_interval(interval);
     }
-    
+
     /// Get per-layer telemetry as dict
-    fn get_layer_telemetry<'py>(&self, py: Python<'py>, layer_id: u32) -> PyResult<Option<Bound<'py, PyDict>>> {
+    fn get_layer_telemetry<'py>(
+        &self,
+        py: Python<'py>,
+        layer_id: u32,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
         if let Some(telemetry) = self.inner.get_layer_telemetry(layer_id) {
             let dict = PyDict::new_bound(py);
             dict.set_item("total_original_bytes", telemetry.total_original_bytes)?;
@@ -419,26 +431,29 @@ impl PyNangilaHook {
             Ok(None)
         }
     }
-    
+
     /// Get summary telemetry across all layers as dict
     fn get_summary_telemetry<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let summary = self.inner.get_summary_telemetry();
         let dict = PyDict::new_bound(py);
         dict.set_item("total_original_bytes", summary.total_original_bytes)?;
         dict.set_item("total_compressed_bytes", summary.total_compressed_bytes)?;
-        dict.set_item("overall_compression_ratio", summary.overall_compression_ratio)?;
+        dict.set_item(
+            "overall_compression_ratio",
+            summary.overall_compression_ratio,
+        )?;
         dict.set_item("total_compressions", summary.total_compressions)?;
         dict.set_item("total_passenger_skips", summary.total_passenger_skips)?;
         dict.set_item("avg_prediction_error", summary.avg_prediction_error)?;
         dict.set_item("num_layers_tracked", summary.num_layers_tracked)?;
         Ok(dict)
     }
-    
+
     /// Enable or disable partial retransmission
     fn set_partial_retransmit(&mut self, enabled: bool) {
         self.inner.set_partial_retransmit(enabled);
     }
-    
+
     /// Enable or disable GPU mode (disables CPU history buffers)
     fn set_gpu_mode(&mut self, enabled: bool) {
         self.inner.set_gpu_mode(enabled);
@@ -487,20 +502,23 @@ unsafe fn cuda_predict_and_quantize(
     #[cfg(feature = "cuda")]
     {
         use nangila_cuda::{predict_and_quantize_cuda, CudaStream, SyncMode};
-        
+
         let stream = if stream_ptr == 0 {
             std::ptr::null_mut()
         } else {
             stream_ptr as CudaStream
         };
-        
+
         let sync = match sync_mode {
             0 => SyncMode::Async,
             1 => SyncMode::Always,
             2 => SyncMode::Periodic,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Invalid sync_mode: {}. Use 0 (Async), 1 (Always), or 2 (Periodic)", sync_mode)
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid sync_mode: {}. Use 0 (Async), 1 (Always), or 2 (Periodic)",
+                    sync_mode
+                )))
+            }
         };
 
         predict_and_quantize_cuda(
@@ -516,16 +534,19 @@ unsafe fn cuda_predict_and_quantize(
             step,
             layer_id,
         )
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
-            format!("CUDA kernel failed: {}. Check inputs and GPU memory.", e)
-        ))?;
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "CUDA kernel failed: {}. Check inputs and GPU memory.",
+                e
+            ))
+        })?;
         Ok(())
     }
     #[cfg(not(feature = "cuda"))]
     {
-         Err(pyo3::exceptions::PyRuntimeError::new_err(
-             "CUDA not compiled. Rebuild with --features cuda"
-         ))
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "CUDA not compiled. Rebuild with --features cuda",
+        ))
     }
 }
 
@@ -560,20 +581,23 @@ unsafe fn cuda_dequantize_and_reconstruct(
     #[cfg(feature = "cuda")]
     {
         use nangila_cuda::{dequantize_and_reconstruct_cuda, CudaStream, SyncMode};
-        
+
         let stream = if stream_ptr == 0 {
             std::ptr::null_mut()
         } else {
             stream_ptr as CudaStream
         };
-        
+
         let sync = match sync_mode {
             0 => SyncMode::Async,
             1 => SyncMode::Always,
             2 => SyncMode::Periodic,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Invalid sync_mode: {}. Use 0 (Async), 1 (Always), or 2 (Periodic)", sync_mode)
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid sync_mode: {}. Use 0 (Async), 1 (Always), or 2 (Periodic)",
+                    sync_mode
+                )))
+            }
         };
 
         dequantize_and_reconstruct_cuda(
@@ -587,15 +611,18 @@ unsafe fn cuda_dequantize_and_reconstruct(
             stream,
             sync,
         )
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
-            format!("CUDA kernel failed: {}. Check inputs and GPU memory.", e)
-        ))?;
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "CUDA kernel failed: {}. Check inputs and GPU memory.",
+                e
+            ))
+        })?;
         Ok(())
     }
     #[cfg(not(feature = "cuda"))]
     {
         Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "CUDA not compiled. Rebuild with --features cuda"
+            "CUDA not compiled. Rebuild with --features cuda",
         ))
     }
 }

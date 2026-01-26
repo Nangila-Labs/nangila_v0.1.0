@@ -79,7 +79,7 @@ impl PacketHeader {
             flags: flags::DRIVER,
             step,
             layer_id,
-            crc32: 0, // Computed later
+            crc32: 0,          // Computed later
             predictor_hash: 0, // Computed later
             start_offset: 0,
             end_offset: 0,
@@ -115,7 +115,7 @@ impl PacketHeader {
             end_offset: 0,
         }
     }
-    
+
     /// Create a partial retransmission header
     pub fn new_partial_retransmit(step: u32, layer_id: u32, start: u32, end: u32) -> Self {
         Self {
@@ -155,7 +155,7 @@ impl PacketHeader {
     pub fn is_desync_recovery(&self) -> bool {
         self.flags & flags::DESYNC_RECOVERY != 0
     }
-    
+
     /// Check if this is a partial retransmission
     pub fn is_partial_retransmit(&self) -> bool {
         self.flags & flags::PARTIAL_RETRANSMIT != 0
@@ -166,7 +166,7 @@ impl PacketHeader {
         self.crc32 = crc;
         self
     }
-    
+
     /// Set the predictor hash
     pub fn with_hash(mut self, hash: u64) -> Self {
         self.predictor_hash = hash;
@@ -202,8 +202,8 @@ impl PacketHeader {
             layer_id: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
             crc32: u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
             predictor_hash: u64::from_le_bytes([
-                bytes[16], bytes[17], bytes[18], bytes[19],
-                bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
+                bytes[23],
             ]),
             start_offset: u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
             end_offset: u32::from_le_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]),

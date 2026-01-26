@@ -78,9 +78,9 @@ impl Reconstructor {
 
         // Reconstruct: g = ĝ + r
         let gradient = prediction.add(&residual);
-        
+
         // Note: we don't cache partial reconstructions as they are usually transient for FSDP
-        
+
         Ok(gradient)
     }
 
@@ -97,18 +97,15 @@ impl Reconstructor {
                 beta,
             } => {
                 // Validate driver exists in cache
-                let driver_grad = self
-                    .driver_cache
-                    .get(source_id)
-                    .ok_or_else(|| {
-                        tracing::error!(
-                            "Passenger {} depends on driver {} which is not in cache. \
+                let driver_grad = self.driver_cache.get(source_id).ok_or_else(|| {
+                    tracing::error!(
+                        "Passenger {} depends on driver {} which is not in cache. \
                              This indicates driver was not reconstructed this step.",
-                            layer_id,
-                            source_id
-                        );
-                        NangilaError::LayerNotFound(*source_id)
-                    })?;
+                        layer_id,
+                        source_id
+                    );
+                    NangilaError::LayerNotFound(*source_id)
+                })?;
 
                 // Validate driver gradient is not stale
                 if let Some(last_step) = self.last_reconstruction_step {
@@ -224,10 +221,8 @@ impl Reconstructor {
                 let driver_slice: Vec<f32> = driver_grad.data[start_index..end_index].to_vec();
 
                 // Scale and add bias: g_passenger = α * g_driver + β
-                let passenger_data: Vec<f32> = driver_slice
-                    .iter()
-                    .map(|&val| val * alpha + beta)
-                    .collect();
+                let passenger_data: Vec<f32> =
+                    driver_slice.iter().map(|&val| val * alpha + beta).collect();
 
                 Ok(Tensor::new(passenger_data, vec![slice_len]))
             }

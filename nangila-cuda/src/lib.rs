@@ -15,8 +15,8 @@ pub mod state;
 mod bindings_test;
 
 pub use bindings::{
-    dequantize_and_reconstruct_cuda, predict_and_quantize_cuda,
-    CudaStream, SyncMode, CUDA_STREAM_DEFAULT,
+    dequantize_and_reconstruct_cuda, predict_and_quantize_cuda, CudaStream, SyncMode,
+    CUDA_STREAM_DEFAULT,
 };
 
 #[cfg(feature = "cuda")]

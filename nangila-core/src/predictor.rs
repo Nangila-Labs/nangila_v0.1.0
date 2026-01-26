@@ -156,7 +156,7 @@ impl Predictor {
             driver_layers: std::collections::HashSet::new(),
         }
     }
-    
+
     /// Enable adaptive momentum (adjusts per-layer momentum based on prediction error)
     pub fn with_adaptive_momentum(mut self, enabled: bool) -> Self {
         if !enabled {
@@ -165,7 +165,7 @@ impl Predictor {
         }
         self
     }
-    
+
     /// Configure adaptive momentum parameters
     pub fn with_adaptive_config(
         mut self,
@@ -195,7 +195,7 @@ impl Predictor {
         self.large_model_threshold = threshold;
         self
     }
-    
+
     /// Set memory mode based on actual memory usage estimate
     pub fn with_memory_budget(mut self, max_memory_mb: usize) -> Self {
         // Estimate: each layer needs 2 buffers (prev + current) × 4 bytes (i32)
@@ -226,10 +226,10 @@ impl Predictor {
             // Each tracked param needs 2 buffers (prev + current) × 4 bytes (Q8.23 is i32)
             let estimated_memory_bytes = self.total_tracked_params * 2 * 4;
             let estimated_memory_mb = estimated_memory_bytes / (1024 * 1024);
-            
+
             // Threshold is in params, convert to memory
             let threshold_memory_mb = self.large_model_threshold * 2 * 4 / (1024 * 1024);
-            
+
             if estimated_memory_mb > threshold_memory_mb {
                 self.effective_mode = MemoryMode::DriversOnly;
                 tracing::info!(
@@ -258,19 +258,22 @@ impl Predictor {
 
     /// Get the effective momentum for a layer (adaptive if enabled)
     pub fn get_momentum(&self, layer_id: LayerId) -> f32 {
-        *self.adaptive_momentum.get(&layer_id).unwrap_or(&self.momentum)
+        *self
+            .adaptive_momentum
+            .get(&layer_id)
+            .unwrap_or(&self.momentum)
     }
 
     /// Record prediction error for adaptive momentum
     pub fn record_error(&mut self, layer_id: LayerId, error: f32) {
         let history = self.error_history.entry(layer_id).or_insert_with(Vec::new);
         history.push(error);
-        
+
         // Keep only recent history
         if history.len() > self.error_window {
             history.remove(0);
         }
-        
+
         // Adapt momentum based on error trend
         if history.len() >= 3 {
             self.adapt_momentum(layer_id);
@@ -283,13 +286,13 @@ impl Predictor {
             Some(h) if h.len() >= 3 => h,
             _ => return,
         };
-        
+
         let current_momentum = self.get_momentum(layer_id);
-        
+
         // Calculate error trend (is error increasing or decreasing?)
         let recent: f32 = history.iter().rev().take(3).sum::<f32>() / 3.0;
         let older: f32 = history.iter().take(3).sum::<f32>() / 3.0;
-        
+
         let new_momentum = if recent > older * 1.1 {
             // Error increasing → reduce momentum (more conservative)
             (current_momentum - self.adaptation_rate).max(self.min_momentum)
@@ -300,7 +303,7 @@ impl Predictor {
             // Stable → slowly return to base momentum
             current_momentum + (self.momentum - current_momentum) * 0.05
         };
-        
+
         self.adaptive_momentum.insert(layer_id, new_momentum);
     }
 
@@ -361,10 +364,10 @@ impl Predictor {
         // Get adaptive momentum for this layer
         let effective_momentum = self.get_momentum(layer_id);
         let momentum = Q8_23::from_f32(effective_momentum);
-        
+
         let mut data = Vec::with_capacity(end_index - start_index);
         let slice_len = (end_index - start_index).min(g_t.len() - start_index);
-        
+
         for i in 0..slice_len {
             let idx = start_index + i;
             if idx >= g_t.len() || idx >= g_t_minus_1.len() {
@@ -372,7 +375,7 @@ impl Predictor {
             }
             let now = g_t.as_slice()[idx];
             let prev = g_t_minus_1.as_slice()[idx];
-            
+
             let delta = now - prev;
             let term = delta * momentum;
             let pred = now + term;
@@ -393,7 +396,7 @@ impl Predictor {
         if !self.history.contains_key(&layer_id) {
             self.total_tracked_params += layer_size;
         }
-        
+
         self.history
             .entry(layer_id)
             .or_insert_with(LayerHistory::new)
@@ -403,7 +406,7 @@ impl Predictor {
     /// Advance the step counter (call once per training step)
     pub fn step(&mut self) {
         self.step += 1;
-        
+
         // Check memory usage once per step (fast check)
         self.check_memory_threshold();
 

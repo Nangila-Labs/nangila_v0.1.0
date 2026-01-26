@@ -50,7 +50,7 @@ fn main() {
         let obj_path = out_dir.join(&obj_name);
 
         let nvcc_path = PathBuf::from(&cuda_path).join("bin").join("nvcc");
-        
+
         // Compile with nvcc
         let status = std::process::Command::new(nvcc_path)
             .args(&[

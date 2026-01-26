@@ -9,11 +9,14 @@
 
 use crate::NangilaHook;
 use nangila_core::{
-    bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16, DataType, NangilaConfig, Tensor, TopologyMask, PacketHeader, Packet,
-    SafeModeConfig, SafeModeAction
+    bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16, DataType, NangilaConfig, Packet,
+    PacketHeader, SafeModeAction, SafeModeConfig, Tensor, TopologyMask,
 };
 #[cfg(feature = "cuda")]
-use nangila_cuda::{predict_and_quantize_cuda, dequantize_and_reconstruct_cuda, copy_device_to_host_async, synchronize_stream, compute_crc32_cuda, CudaStream};
+use nangila_cuda::{
+    compute_crc32_cuda, copy_device_to_host_async, dequantize_and_reconstruct_cuda,
+    predict_and_quantize_cuda, synchronize_stream, CudaStream,
+};
 use std::ffi::{c_char, CStr};
 use std::fs::File;
 use std::io::BufReader;
@@ -73,7 +76,7 @@ pub unsafe extern "C" fn nangila_init(mask_path: *const c_char) -> NangilaHandle
     };
 
     let mut hook = NangilaHook::new(NangilaConfig::default(), mask);
-    // Enable GPU mode by default for this binding? 
+    // Enable GPU mode by default for this binding?
     // Or expose a separate init function?
     // Let's add a set_gpu_mode function and call it from C++ if needed.
     // For now, let's keep it simple and default to CPU mode behavior unless explicitly set.
@@ -90,7 +93,6 @@ pub unsafe extern "C" fn nangila_set_gpu_mode(handle: NangilaHandle, enabled: i3
         hook.set_gpu_mode(enabled != 0);
     }
 }
-
 
 /// Initialize Nangila with all-driver topology (no Passengers)
 ///
@@ -503,7 +505,6 @@ mod tests {
 
             nangila_free(handle);
         }
-
     }
 }
 
@@ -514,330 +515,329 @@ mod tests {
 #[cfg(feature = "cuda")]
 mod gpu_impl {
     use super::*;
-    use std::slice;
     use nangila_core::PacketHeader;
+    use std::slice;
 
-/// Compress gradient on GPU (Fused Kernel)
-///
-/// Dispatches CUDA kernel for predict-quantize.
-/// Writes packet header to `out_header_cpu`.
-#[no_mangle]
-pub unsafe extern "C" fn nangila_compress_gpu(
-    handle: NangilaHandle,
-    gradient: *const f32,      // GPU
-    g_current: *const f32,     // GPU
-    g_previous: *const f32,    // GPU
-    count: usize,
-    layer_id: u32,
-    out_compressed_payload: *mut u8, // GPU
-    out_compressed_size: *mut usize,
-    out_header_cpu: *mut u8,   // CPU
-    stream: *mut std::ffi::c_void,
-    scratch_ptr: *mut u32,     // GPU scratch (4 bytes)
-    sync_mode: i32,            // Synchronization mode
-) -> i32 {
-    if handle.is_null()
-        || gradient.is_null()
-        || g_current.is_null()
-        || g_previous.is_null()
-        || out_compressed_payload.is_null()
-        || out_header_cpu.is_null()
-        || scratch_ptr.is_null()
-    {
-        return NangilaResult::InvalidPointer as i32;
+    /// Compress gradient on GPU (Fused Kernel)
+    ///
+    /// Dispatches CUDA kernel for predict-quantize.
+    /// Writes packet header to `out_header_cpu`.
+    #[no_mangle]
+    pub unsafe extern "C" fn nangila_compress_gpu(
+        handle: NangilaHandle,
+        gradient: *const f32,   // GPU
+        g_current: *const f32,  // GPU
+        g_previous: *const f32, // GPU
+        count: usize,
+        layer_id: u32,
+        out_compressed_payload: *mut u8, // GPU
+        out_compressed_size: *mut usize,
+        out_header_cpu: *mut u8, // CPU
+        stream: *mut std::ffi::c_void,
+        scratch_ptr: *mut u32, // GPU scratch (4 bytes)
+        sync_mode: i32,        // Synchronization mode
+    ) -> i32 {
+        if handle.is_null()
+            || gradient.is_null()
+            || g_current.is_null()
+            || g_previous.is_null()
+            || out_compressed_payload.is_null()
+            || out_header_cpu.is_null()
+            || scratch_ptr.is_null()
+        {
+            return NangilaResult::InvalidPointer as i32;
+        }
+
+        let hook = &mut *handle;
+        let config = hook.config(); // We need to expose config or access it via state
+
+        // For now, access via internal state which is private.
+        // Hack: We need to expose accessor in hook.rs or duplicate logic.
+        // The `state` field is private. We should add a method to get config params.
+        // Assuming `state().predictor().momentum()` is accessible or similar.
+        // Let's rely on `hook.get_momentum(layer_id)` if it exists.
+        // Actually `hook.rs` struct fields are private.
+        // Use `hook.state.predictor().momentum()` -> `state` is private.
+        // I need to update `hook.rs` to expose these.
+        // For this step, I will assume `hook.momentum()` and `hook.gamma()` are available.
+        // I will add them to hook.rs in a separate step if needed, but `hook.rs` view showed public methods.
+        // `hook.is_compression_enabled()` is public.
+        // `hook.state` is private.
+
+        let momentum = hook.momentum();
+        let gamma = hook.gamma();
+
+        // Convert sync_mode to SyncMode enum
+        use nangila_cuda::SyncMode;
+        let sync = match sync_mode {
+            0 => SyncMode::Async,
+            1 => SyncMode::Always,
+            2 => SyncMode::Periodic,
+            _ => SyncMode::Periodic, // Default to safe mode
+        };
+
+        // Launch CUDA Kernel
+        let result = predict_and_quantize_cuda(
+            gradient,
+            g_current,
+            g_previous,
+            momentum,
+            gamma,
+            out_compressed_payload,
+            count,
+            stream as CudaStream,
+            sync,
+            0, // step - not tracked at this FFI layer
+            layer_id,
+        );
+
+        if result.is_err() {
+            tracing::error!("CUDA Kernel Launch Failed");
+            return NangilaResult::CompressionError as i32;
+        }
+
+        // Create Header (CPU)
+        // Step counter logic? Hook manages step.
+        // Create Header (CPU)
+        // Step counter logic? Hook manages step.
+        let step = hook.current_step() as u32;
+        let hash = hook.predictor_hash();
+        let header = PacketHeader::new_driver(step, layer_id).with_hash(hash);
+
+        // Serialize Header to CPU buffer
+        let header_bytes = header.to_bytes();
+        if header_bytes.len() > 24 {
+            // Should be exactly 24 bytes
+            return NangilaResult::CompressionError as i32;
+        }
+
+        let out_slice = slice::from_raw_parts_mut(out_header_cpu, 24);
+        out_slice.copy_from_slice(&header_bytes);
+
+        // Calculate detailed size
+        // Payload size = (count + 1) / 2
+        let payload_size = (count + 1) / 2;
+        *out_compressed_size = 24 + payload_size;
+
+        // 2. Compute CRC32
+        // Launch CRC32 kernel on payload
+        if let Err(e) = compute_crc32_cuda(
+            out_compressed_payload,
+            payload_size,
+            scratch_ptr,
+            stream as CudaStream,
+        ) {
+            tracing::error!("Failed to launch CRC32 kernel: {:?}", e);
+            return NangilaResult::CompressionError as i32;
+        }
+
+        // 3. Retrieve CRC32 (D2H) + Sync
+        // We reuse header buffer or a stack var? We need to copy 4 bytes from scratch_ptr to CPU.
+        let mut computed_crc = [0u32; 1];
+        let computed_crc_bytes =
+            unsafe { slice::from_raw_parts_mut(computed_crc.as_mut_ptr() as *mut u8, 4) };
+
+        if let Err(e) = copy_device_to_host_async(
+            scratch_ptr as *const u8,
+            computed_crc_bytes.as_mut_ptr(),
+            4,
+            stream as CudaStream,
+        ) {
+            tracing::error!("Failed to copy CRC32: {:?}", e);
+            return NangilaResult::CompressionError as i32;
+        }
+
+        if let Err(e) = synchronize_stream(stream as CudaStream) {
+            tracing::error!("Failed to sync for CRC32: {:?}", e);
+            return NangilaResult::CompressionError as i32;
+        }
+
+        // 4. Update Header
+        let final_header = header.with_crc(computed_crc[0]);
+        let final_bytes = final_header.to_bytes();
+
+        let out_slice = slice::from_raw_parts_mut(out_header_cpu, 24);
+        out_slice.copy_from_slice(&final_bytes);
+
+        NangilaResult::Success as i32
     }
 
-    let hook = &mut *handle;
-    let config = hook.config(); // We need to expose config or access it via state
+    /// Decompress gradient on GPU (Fused Kernel)
+    #[no_mangle]
+    pub unsafe extern "C" fn nangila_decompress_gpu(
+        handle: NangilaHandle,
+        compressed: *const u8, // GPU (start of packet)
+        compressed_size: usize,
+        g_current: *const f32,  // GPU
+        g_previous: *const f32, // GPU
+        layer_id: u32,
+        recvbuff: *mut f32, // GPU
+        count: usize,
+        stream: *mut std::ffi::c_void,
+        scratch_ptr: *mut u32, // GPU scratch (4 bytes)
+        sync_mode: i32,        // Synchronization mode
+    ) -> i32 {
+        // 1. Basic Validity Checks
+        if handle.is_null() || compressed.is_null() || recvbuff.is_null() || scratch_ptr.is_null() {
+            return NangilaResult::InvalidPointer as i32;
+        }
 
-    // For now, access via internal state which is private.
-    // Hack: We need to expose accessor in hook.rs or duplicate logic.
-    // The `state` field is private. We should add a method to get config params.
-    // Assuming `state().predictor().momentum()` is accessible or similar.
-    // Let's rely on `hook.get_momentum(layer_id)` if it exists.
-    // Actually `hook.rs` struct fields are private.
-    // Use `hook.state.predictor().momentum()` -> `state` is private.
-    // I need to update `hook.rs` to expose these.
-    // For this step, I will assume `hook.momentum()` and `hook.gamma()` are available.
-    // I will add them to hook.rs in a separate step if needed, but `hook.rs` view showed public methods.
-    // `hook.is_compression_enabled()` is public.
-    // `hook.state` is private.
-
-    let momentum = hook.momentum();
-    let gamma = hook.gamma(); 
-
-    // Convert sync_mode to SyncMode enum
-    use nangila_cuda::SyncMode;
-    let sync = match sync_mode {
-        0 => SyncMode::Async,
-        1 => SyncMode::Always,
-        2 => SyncMode::Periodic,
-        _ => SyncMode::Periodic, // Default to safe mode
-    };
-
-    // Launch CUDA Kernel
-    let result = predict_and_quantize_cuda(
-        gradient,
-        g_current,
-        g_previous,
-        momentum,
-        gamma,
-        out_compressed_payload,
-        count,
-        stream as CudaStream,
-        sync,
-        0, // step - not tracked at this FFI layer
-        layer_id,
-    );
-
-    if result.is_err() {
-        tracing::error!("CUDA Kernel Launch Failed");
-        return NangilaResult::CompressionError as i32;
-    }
-
-    // Create Header (CPU)
-    // Step counter logic? Hook manages step.
-    // Create Header (CPU)
-    // Step counter logic? Hook manages step.
-    let step = hook.current_step() as u32;
-    let hash = hook.predictor_hash();
-    let header = PacketHeader::new_driver(step, layer_id).with_hash(hash);
-    
-    // Serialize Header to CPU buffer
-    let header_bytes = header.to_bytes();
-    if header_bytes.len() > 24 {
-        // Should be exactly 24 bytes
-        return NangilaResult::CompressionError as i32;
-    }
-    
-    let out_slice = slice::from_raw_parts_mut(out_header_cpu, 24);
-    out_slice.copy_from_slice(&header_bytes);
-
-    // Calculate detailed size
-    // Payload size = (count + 1) / 2
-    let payload_size = (count + 1) / 2;
-    *out_compressed_size = 24 + payload_size;
-
-    // 2. Compute CRC32
-    // Launch CRC32 kernel on payload
-    if let Err(e) = compute_crc32_cuda(
-        out_compressed_payload,
-        payload_size,
-        scratch_ptr,
-        stream as CudaStream
-    ) {
-         tracing::error!("Failed to launch CRC32 kernel: {:?}", e);
-         return NangilaResult::CompressionError as i32;
-    }
-
-    // 3. Retrieve CRC32 (D2H) + Sync
-    // We reuse header buffer or a stack var? We need to copy 4 bytes from scratch_ptr to CPU.
-    let mut computed_crc = [0u32; 1];
-    let computed_crc_bytes = unsafe { slice::from_raw_parts_mut(computed_crc.as_mut_ptr() as *mut u8, 4) };
-    
-    if let Err(e) = copy_device_to_host_async(
-        scratch_ptr as *const u8,
-        computed_crc_bytes.as_mut_ptr(),
-        4,
-        stream as CudaStream
-    ) {
-        tracing::error!("Failed to copy CRC32: {:?}", e);
-        return NangilaResult::CompressionError as i32;
-    }
-
-    if let Err(e) = synchronize_stream(stream as CudaStream) {
-        tracing::error!("Failed to sync for CRC32: {:?}", e);
-        return NangilaResult::CompressionError as i32;
-    }
-
-    // 4. Update Header
-    let final_header = header.with_crc(computed_crc[0]);
-    let final_bytes = final_header.to_bytes();
-    
-    let out_slice = slice::from_raw_parts_mut(out_header_cpu, 24);
-    out_slice.copy_from_slice(&final_bytes);
-    
-    NangilaResult::Success as i32
-}
-
-/// Decompress gradient on GPU (Fused Kernel)
-#[no_mangle]
-pub unsafe extern "C" fn nangila_decompress_gpu(
-    handle: NangilaHandle,
-    compressed: *const u8,     // GPU (start of packet)
-    compressed_size: usize,
-    g_current: *const f32,     // GPU
-    g_previous: *const f32,    // GPU
-    layer_id: u32,
-    recvbuff: *mut f32,        // GPU
-    count: usize,
-    stream: *mut std::ffi::c_void,
-    scratch_ptr: *mut u32,     // GPU scratch (4 bytes)
-    sync_mode: i32,            // Synchronization mode
-) -> i32 {
-    // 1. Basic Validity Checks
-    if handle.is_null() || compressed.is_null() || recvbuff.is_null() || scratch_ptr.is_null() {
-        return NangilaResult::InvalidPointer as i32;
-    }
-
-    if compressed_size < 24 {
-        tracing::error!("Packet too small for header: {}", compressed_size);
-        return NangilaResult::DecompressionError as i32;
-    }
-
-    let cuda_stream = stream as CudaStream;
-    let hook = &mut *handle;
-
-    // 2. SAFETY: Header Verification (D2H Copy)
-    // We copy 24 bytes from GPU to CPU to check protocol validity before launching kernel
-    let mut header_bytes = [0u8; 24];
-    
-    // Async copy (enqueued in stream)
-    if let Err(e) = copy_device_to_host_async(compressed, header_bytes.as_mut_ptr(), 24, cuda_stream) {
-        tracing::error!("Failed to copy header from GPU: {:?}", e);
-        return NangilaResult::DecompressionError as i32;
-    }
-
-    // Must synchronize to read the data on CPU
-    // Note: This adds a small latency bubble but ensures safety against wrong-rank/corrupt data
-    if let Err(e) = synchronize_stream(cuda_stream) {
-        tracing::error!("Failed to synchronize stream for header check: {:?}", e);
-        return NangilaResult::DecompressionError as i32;
-    }
-
-    // 3. Parse and Validate Header
-    let header = match PacketHeader::from_bytes(&header_bytes) {
-        Some(h) => h,
-        None => {
-            tracing::error!("Invalid packet header bytes");
+        if compressed_size < 24 {
+            tracing::error!("Packet too small for header: {}", compressed_size);
             return NangilaResult::DecompressionError as i32;
         }
-    };
 
-    if !header.is_valid() {
-        tracing::error!("Invalid magic/version in packet header: {:?}", header);
-        return NangilaResult::DecompressionError as i32;
-    }
+        let cuda_stream = stream as CudaStream;
+        let hook = &mut *handle;
 
-    if header.layer_id != layer_id {
-        tracing::error!(
-            "Layer ID mismatch! Expected {}, got {}",
-            layer_id,
-            header.layer_id
+        // 2. SAFETY: Header Verification (D2H Copy)
+        // We copy 24 bytes from GPU to CPU to check protocol validity before launching kernel
+        let mut header_bytes = [0u8; 24];
+
+        // Async copy (enqueued in stream)
+        if let Err(e) =
+            copy_device_to_host_async(compressed, header_bytes.as_mut_ptr(), 24, cuda_stream)
+        {
+            tracing::error!("Failed to copy header from GPU: {:?}", e);
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        // Must synchronize to read the data on CPU
+        // Note: This adds a small latency bubble but ensures safety against wrong-rank/corrupt data
+        if let Err(e) = synchronize_stream(cuda_stream) {
+            tracing::error!("Failed to synchronize stream for header check: {:?}", e);
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        // 3. Parse and Validate Header
+        let header = match PacketHeader::from_bytes(&header_bytes) {
+            Some(h) => h,
+            None => {
+                tracing::error!("Invalid packet header bytes");
+                return NangilaResult::DecompressionError as i32;
+            }
+        };
+
+        if !header.is_valid() {
+            tracing::error!("Invalid magic/version in packet header: {:?}", header);
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        if header.layer_id != layer_id {
+            tracing::error!(
+                "Layer ID mismatch! Expected {}, got {}",
+                layer_id,
+                header.layer_id
+            );
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        // Verify Predictor Hash
+        let local_hash = hook.predictor_hash();
+        if header.predictor_hash != local_hash {
+            tracing::error!(
+                "Predictor State Desync! Layer {}, Expected Hash {:016x}, Got {:016x}",
+                layer_id,
+                local_hash,
+                header.predictor_hash
+            );
+            // We should trigger recovery here?
+            // hook.trigger_recovery(layer_id); // Requires mutable hook, we have it.
+            hook.trigger_recovery(layer_id);
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        // 3b. Verify CRC32
+        // Launch CRC32 on payload
+        let payload_offset = 24;
+        let payload_len = compressed_size - 24;
+        let payload_ptr_u8 = compressed.add(payload_offset);
+
+        if let Err(e) = compute_crc32_cuda(payload_ptr_u8, payload_len, scratch_ptr, cuda_stream) {
+            tracing::error!("Failed to launch CRC32 verify: {:?}", e);
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        // Read back CRC
+        let mut computed_crc = [0u32; 1];
+        let computed_crc_bytes =
+            unsafe { slice::from_raw_parts_mut(computed_crc.as_mut_ptr() as *mut u8, 4) };
+
+        if let Err(e) = copy_device_to_host_async(
+            scratch_ptr as *const u8,
+            computed_crc_bytes.as_mut_ptr(),
+            4,
+            cuda_stream,
+        ) {
+            tracing::error!("Failed to copy CRC32 verify: {:?}", e);
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        if let Err(e) = synchronize_stream(cuda_stream) {
+            tracing::error!("Failed to sync for CRC32 verify: {:?}", e);
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        if computed_crc[0] != header.crc32 {
+            tracing::error!(
+                "CRC32 Mismatch! Header: {:08x}, Computed: {:08x}",
+                header.crc32,
+                computed_crc[0]
+            );
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        // TODO: Verify step count if we pass expected_step in handle/arguments
+
+        // 4. Handle Special Flags
+        if header.is_force_sync() {
+            // Force Sync: Payload is raw FP32 (uncompressed)
+            // We can just copy it directly? Or use a kernel?
+            // Current GPU kernel doesn't handle Passthrough/ForceSync raw payloads
+            // Nangila logic: If ForceSync, we should reset predictor.
+            // We need a separate handling path.
+            // For now, let's error out or fallback if force sync is needed?
+            // Actually, we can implement a simple copy kernel or cudaMemcpyDeviceToDevice?
+            // But the kernel `dequantize_...` expects packed int4.
+            tracing::warn!("FORCE_SYNC received on GPU path - Not fully implemented yet!");
+            // We proceed to try decompression which will produce garbage...
+            // Ideally we should return a specific code to let C++ fallback to CPU handling?
+            return NangilaResult::DecompressionError as i32;
+        }
+
+        // 5. Decompress Payload
+        // Offset by header size
+        let payload_ptr = compressed.add(24);
+
+        let momentum = hook.momentum();
+        let gamma = hook.gamma();
+
+        // Convert sync_mode to SyncMode enum
+        use nangila_cuda::SyncMode;
+        let sync = match sync_mode {
+            0 => SyncMode::Async,
+            1 => SyncMode::Always,
+            2 => SyncMode::Periodic,
+            _ => SyncMode::Periodic, // Default to safe mode
+        };
+
+        let result = dequantize_and_reconstruct_cuda(
+            payload_ptr,
+            g_current,
+            g_previous,
+            momentum,
+            gamma,
+            recvbuff,
+            count,
+            cuda_stream,
+            sync,
         );
-        return NangilaResult::DecompressionError as i32;
-    }
 
-    // Verify Predictor Hash
-    let local_hash = hook.predictor_hash();
-    if header.predictor_hash != local_hash {
-        tracing::error!(
-            "Predictor State Desync! Layer {}, Expected Hash {:016x}, Got {:016x}",
-            layer_id, local_hash, header.predictor_hash
-        );
-        // We should trigger recovery here?
-        // hook.trigger_recovery(layer_id); // Requires mutable hook, we have it.
-        hook.trigger_recovery(layer_id);
-        return NangilaResult::DecompressionError as i32;
+        if result.is_err() {
+            return NangilaResult::DecompressionError as i32;
+        }
+        NangilaResult::Success as i32
     }
-
-    
-    // 3b. Verify CRC32
-    // Launch CRC32 on payload
-    let payload_offset = 24;
-    let payload_len = compressed_size - 24;
-    let payload_ptr_u8 = compressed.add(payload_offset);
-
-    if let Err(e) = compute_crc32_cuda(
-        payload_ptr_u8,
-        payload_len,
-        scratch_ptr,
-        cuda_stream
-    ) {
-        tracing::error!("Failed to launch CRC32 verify: {:?}", e);
-        return NangilaResult::DecompressionError as i32;
-    }
-
-    // Read back CRC
-    let mut computed_crc = [0u32; 1];
-    let computed_crc_bytes = unsafe { slice::from_raw_parts_mut(computed_crc.as_mut_ptr() as *mut u8, 4) };
-    
-     if let Err(e) = copy_device_to_host_async(
-        scratch_ptr as *const u8,
-        computed_crc_bytes.as_mut_ptr(),
-        4,
-        cuda_stream
-    ) {
-        tracing::error!("Failed to copy CRC32 verify: {:?}", e);
-        return NangilaResult::DecompressionError as i32;
-    }
-
-    if let Err(e) = synchronize_stream(cuda_stream) {
-         tracing::error!("Failed to sync for CRC32 verify: {:?}", e);
-         return NangilaResult::DecompressionError as i32;
-    }
-
-    if computed_crc[0] != header.crc32 {
-         tracing::error!(
-            "CRC32 Mismatch! Header: {:08x}, Computed: {:08x}",
-            header.crc32,
-            computed_crc[0]
-        );
-        return NangilaResult::DecompressionError as i32;
-    }
-    
-    // TODO: Verify step count if we pass expected_step in handle/arguments
-    
-    // 4. Handle Special Flags
-    if header.is_force_sync() {
-        // Force Sync: Payload is raw FP32 (uncompressed)
-        // We can just copy it directly? Or use a kernel?
-        // Current GPU kernel doesn't handle Passthrough/ForceSync raw payloads
-        // Nangila logic: If ForceSync, we should reset predictor.
-        // We need a separate handling path.
-        // For now, let's error out or fallback if force sync is needed?
-        // Actually, we can implement a simple copy kernel or cudaMemcpyDeviceToDevice?
-        // But the kernel `dequantize_...` expects packed int4.
-        tracing::warn!("FORCE_SYNC received on GPU path - Not fully implemented yet!");
-        // We proceed to try decompression which will produce garbage...
-        // Ideally we should return a specific code to let C++ fallback to CPU handling?
-        return NangilaResult::DecompressionError as i32; 
-    }
-
-    // 5. Decompress Payload
-    // Offset by header size
-    let payload_ptr = compressed.add(24);
-    
-    let momentum = hook.momentum();
-    let gamma = hook.gamma();
-    
-    // Convert sync_mode to SyncMode enum
-    use nangila_cuda::SyncMode;
-    let sync = match sync_mode {
-        0 => SyncMode::Async,
-        1 => SyncMode::Always,
-        2 => SyncMode::Periodic,
-        _ => SyncMode::Periodic, // Default to safe mode
-    };
-    
-    let result = dequantize_and_reconstruct_cuda(
-        payload_ptr,
-        g_current,
-        g_previous,
-        momentum,
-        gamma,
-        recvbuff,
-        count,
-        cuda_stream,
-        sync,
-    );
-    
-    if result.is_err() {
-         return NangilaResult::DecompressionError as i32;
-    }
-    NangilaResult::Success as i32
-
-}
 } // end mod gpu_impl
 
 #[cfg(feature = "cuda")]
@@ -869,10 +869,7 @@ pub extern "C" fn nangila_enable_safe_mode(
 }
 
 #[no_mangle]
-pub extern "C" fn nangila_report_val_loss(
-    handle: *mut NangilaHook,
-    loss: f32,
-) -> i32 {
+pub extern "C" fn nangila_report_val_loss(handle: *mut NangilaHook, loss: f32) -> i32 {
     if handle.is_null() {
         return 3; // NoCheck
     }

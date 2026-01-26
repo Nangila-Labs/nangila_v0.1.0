@@ -144,11 +144,11 @@ impl TopologyMask {
     pub fn fsdp_ordered_layers(&self) -> Vec<LayerId> {
         let mut drivers: Vec<LayerId> = self.drivers().collect();
         let mut passengers: Vec<LayerId> = self.passengers().map(|(id, _, _)| id).collect();
-        
+
         // Sort for deterministic ordering
         drivers.sort();
         passengers.sort();
-        
+
         // Drivers first, then passengers
         drivers.extend(passengers);
         drivers
@@ -158,26 +158,30 @@ impl TopologyMask {
     /// Returns (layer_id, prefetch_priority) where lower priority = decompress first
     pub fn prefetch_hints(&self) -> Vec<(LayerId, u32)> {
         let mut hints = Vec::new();
-        
+
         // Drivers get priority 0 (decompress first)
         for driver_id in self.drivers() {
             hints.push((driver_id, 0));
         }
-        
+
         // Passengers get priority 1 (decompress after drivers)
         for (passenger_id, _, _) in self.passengers() {
             hints.push((passenger_id, 1));
         }
-        
+
         // Sort by priority then layer_id for determinism
         hints.sort_by_key(|(id, priority)| (*priority, *id));
         hints
     }
 
     /// Check if a layer's dependencies are satisfied (for FSDP ordering)
-    pub fn dependencies_ready(&self, layer_id: LayerId, ready_layers: &std::collections::HashSet<LayerId>) -> bool {
+    pub fn dependencies_ready(
+        &self,
+        layer_id: LayerId,
+        ready_layers: &std::collections::HashSet<LayerId>,
+    ) -> bool {
         match self.layers.get(&layer_id) {
-            Some(LayerRole::Driver) => true,  // Drivers have no dependencies
+            Some(LayerRole::Driver) => true, // Drivers have no dependencies
             Some(LayerRole::Passenger { source_id, .. }) => ready_layers.contains(source_id),
             None => false,
         }

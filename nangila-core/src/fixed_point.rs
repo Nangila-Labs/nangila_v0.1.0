@@ -51,21 +51,22 @@ impl Q8_23 {
     ///
     /// Values outside the representable range are clamped.
     /// Large values that require clamping may indicate gradient explosions.
-    /// 
+    ///
     /// If gradient clipping is needed, use `from_f32_clipped` instead.
     #[inline]
     pub fn from_f32(f: f32) -> Self {
         // Track saturation for diagnostics (using static atomic counter)
-        static SATURATION_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static SATURATION_COUNT: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
         static LAST_LOG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        
+
         // Clamp to valid range before conversion
         let clamped = f.clamp(-256.0, 255.99999988);
-        
+
         // Check for saturation (value was clamped)
         if f != clamped && !f.is_nan() {
             let count = SATURATION_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            
+
             // Log every 1000 saturations to avoid spam
             let last_log = LAST_LOG_COUNT.load(std::sync::atomic::Ordering::Relaxed);
             if count >= last_log + 1000 {
@@ -77,11 +78,11 @@ impl Q8_23 {
                 );
             }
         }
-        
+
         let scaled = clamped * SCALE_F32;
         Self(scaled.round() as i32)
     }
-    
+
     /// Convert from f32 with gradient clipping
     ///
     /// Applies percentile-based clipping before conversion to prevent
@@ -199,24 +200,27 @@ impl FixedPointBuffer {
             data: slice.iter().map(|&f| Q8_23::from_f32(f)).collect(),
         }
     }
-    
+
     /// Create from f32 slice with gradient clipping
     pub fn from_f32_slice_clipped(slice: &[f32], clip_value: f32) -> Self {
         Self {
-            data: slice.iter().map(|&f| Q8_23::from_f32_clipped(f, clip_value)).collect(),
+            data: slice
+                .iter()
+                .map(|&f| Q8_23::from_f32_clipped(f, clip_value))
+                .collect(),
         }
     }
-    
+
     /// Create from f32 slice with automatic percentile-based clipping
     /// Clips at the 99.9th percentile to handle outliers
     pub fn from_f32_slice_auto_clip(slice: &[f32]) -> Self {
         // Compute 99.9th percentile for clipping
         let mut abs_vals: Vec<f32> = slice.iter().map(|x| x.abs()).collect();
         abs_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        
+
         let p999_idx = ((abs_vals.len() as f32) * 0.999) as usize;
         let clip_value = abs_vals.get(p999_idx).copied().unwrap_or(256.0).min(256.0);
-        
+
         Self::from_f32_slice_clipped(slice, clip_value)
     }
 

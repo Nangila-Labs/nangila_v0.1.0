@@ -48,7 +48,9 @@ pub use predictor::Predictor;
 pub use quantizer::{CompressedTensor, Quantizer};
 pub use reconstructor::Reconstructor;
 pub use sculptor::Sculptor;
-pub use state::{CompressionResult, CompressionStats, LayerTelemetry, NangilaState, SummaryTelemetry};
+pub use state::{
+    CompressionResult, CompressionStats, LayerTelemetry, NangilaState, SummaryTelemetry,
+};
 
 // Phase 1 exports
 pub use checkpoint::{GradientHistory, NangilaCheckpoint, PredictorSnapshot};
