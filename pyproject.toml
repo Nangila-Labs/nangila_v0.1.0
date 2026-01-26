@@ -43,7 +43,7 @@ Documentation = "https://github.com/nangila/nangila#readme"
 Repository = "https://github.com/nangila/nangila"
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "cuda", "python"]
 python-source = "python"
 module-name = "nangila"
 manifest-path = "nangila-hook/Cargo.toml"

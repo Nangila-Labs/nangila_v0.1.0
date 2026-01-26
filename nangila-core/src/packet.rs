@@ -26,9 +26,11 @@ pub mod flags {
     pub const ACK_RESPONSE: u8 = 0x10;
     /// Desync detected, initiating recovery
     pub const DESYNC_RECOVERY: u8 = 0x20;
+    /// This is a partial retransmission (subset of data)
+    pub const PARTIAL_RETRANSMIT: u8 = 0x40;
 }
 
-/// Packet header (16 bytes, fixed size)
+/// Packet header (32 bytes, fixed size)
 ///
 /// Layout:
 /// ```text
@@ -36,6 +38,10 @@ pub mod flags {
 /// | magic (2) | ver | flags |   step (4)   |
 /// +--------+--------+--------+--------+
 /// |     layer_id (4)     |     crc32 (4)    |
+/// +--------+--------+--------+--------+
+/// |          predictor_hash (8)          |
+/// +--------+--------+--------+--------+
+/// |   start_offset (4)   |   end_offset (4) |
 /// +--------+--------+--------+--------+
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,11 +59,17 @@ pub struct PacketHeader {
     pub layer_id: u32,
     /// CRC32 of payload (computed after header)
     pub crc32: u32,
+    /// Predictor state hash (for desync detection)
+    pub predictor_hash: u64,
+    /// Start offset for partial retransmission (0 for full packet)
+    pub start_offset: u32,
+    /// End offset for partial retransmission (0 for full packet)
+    pub end_offset: u32,
 }
 
 impl PacketHeader {
     /// Header size in bytes
-    pub const SIZE: usize = 16;
+    pub const SIZE: usize = 32;
 
     /// Create a new header for driver data
     pub fn new_driver(step: u32, layer_id: u32) -> Self {
@@ -68,6 +80,9 @@ impl PacketHeader {
             step,
             layer_id,
             crc32: 0, // Computed later
+            predictor_hash: 0, // Computed later
+            start_offset: 0,
+            end_offset: 0,
         }
     }
 
@@ -80,6 +95,9 @@ impl PacketHeader {
             step,
             layer_id,
             crc32: 0,
+            predictor_hash: 0,
+            start_offset: 0,
+            end_offset: 0,
         }
     }
 
@@ -92,6 +110,24 @@ impl PacketHeader {
             step,
             layer_id,
             crc32: 0,
+            predictor_hash: 0,
+            start_offset: 0,
+            end_offset: 0,
+        }
+    }
+    
+    /// Create a partial retransmission header
+    pub fn new_partial_retransmit(step: u32, layer_id: u32, start: u32, end: u32) -> Self {
+        Self {
+            magic: PACKET_MAGIC,
+            version: PROTOCOL_VERSION,
+            flags: flags::PARTIAL_RETRANSMIT | flags::DRIVER,
+            step,
+            layer_id,
+            crc32: 0,
+            predictor_hash: 0,
+            start_offset: start,
+            end_offset: end,
         }
     }
 
@@ -119,10 +155,21 @@ impl PacketHeader {
     pub fn is_desync_recovery(&self) -> bool {
         self.flags & flags::DESYNC_RECOVERY != 0
     }
+    
+    /// Check if this is a partial retransmission
+    pub fn is_partial_retransmit(&self) -> bool {
+        self.flags & flags::PARTIAL_RETRANSMIT != 0
+    }
 
     /// Set the CRC32 value
     pub fn with_crc(mut self, crc: u32) -> Self {
         self.crc32 = crc;
+        self
+    }
+    
+    /// Set the predictor hash
+    pub fn with_hash(mut self, hash: u64) -> Self {
+        self.predictor_hash = hash;
         self
     }
 
@@ -135,6 +182,9 @@ impl PacketHeader {
         bytes[4..8].copy_from_slice(&self.step.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.layer_id.to_le_bytes());
         bytes[12..16].copy_from_slice(&self.crc32.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.predictor_hash.to_le_bytes());
+        bytes[24..28].copy_from_slice(&self.start_offset.to_le_bytes());
+        bytes[28..32].copy_from_slice(&self.end_offset.to_le_bytes());
         bytes
     }
 
@@ -151,6 +201,12 @@ impl PacketHeader {
             step: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
             layer_id: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
             crc32: u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+            predictor_hash: u64::from_le_bytes([
+                bytes[16], bytes[17], bytes[18], bytes[19],
+                bytes[20], bytes[21], bytes[22], bytes[23],
+            ]),
+            start_offset: u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+            end_offset: u32::from_le_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]),
         })
     }
 

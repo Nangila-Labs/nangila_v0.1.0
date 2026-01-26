@@ -6,7 +6,11 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-red.svg)](https://pytorch.org/)
 
-Nangila virtualizes network bandwidth during Data Parallel (DDP) training by transmitting **Predictive Residuals** instead of raw gradients. Achieve **32-80× compression** with negligible overhead.
+> ⚠️ **PRE-PRODUCTION STATUS**: Nangila is currently in active development and **not yet production-ready**. Core algorithms are implemented and tested, but comprehensive validation on large-scale training workloads is ongoing. See [Roadmap](#-roadmap) for details.
+
+Nangila virtualizes network bandwidth during Data Parallel (DDP) training by transmitting **Predictive Residuals** instead of raw gradients. Achieve **20-50× compression** in typical scenarios (up to 64× in ideal cases).
+
+> **Note**: GPU-native path provides minimal overhead (<1ms compression latency, pending hardware validation). CPU fallback path has higher overhead due to GPU↔CPU transfers.
 
 ## 🚀 Quick Start
 
@@ -34,6 +38,7 @@ pip install nangila
 # - Rust 1.70+ (https://rustup.rs)
 # - Python 3.8+
 # - PyTorch 2.0+
+# - CUDA 11.0+ (optional, for GPU acceleration)
 
 git clone https://github.com/nangila/nangila.git
 cd nangila
@@ -61,28 +66,31 @@ Nangila:          Gradient ──▶ [Predict] ──▶ [Residual] ──▶ [I
 
 ## 🔧 Usage
 
-### Basic Usage (No Calibration)
+### Basic DDP Usage
 
 ```python
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from nangila import NangilaHook
+from nangila.ddp import register_nangila_hook
 
 # Initialize DDP as usual
 dist.init_process_group("nccl")
 model = DDP(MyModel().cuda())
 
-# Attach Nangila hook (all layers as drivers)
-hook = NangilaHook.all_drivers(num_layers=100)
-# model.register_comm_hook(state=None, hook=hook.comm_hook)
+# Register Nangila compression hook
+hook = register_nangila_hook(
+    model,
+    threshold=0.95,      # Compression quality
+    warmup_steps=100,    # Steps before compression activates
+)
 
 # Training loop unchanged
 for batch in dataloader:
     loss = model(batch).sum()
     loss.backward()
     optimizer.step()
-    hook.step()  # Advance predictor
+    hook.step()  # Advance predictor state
 ```
 
 ### With Calibration (Higher Compression)
@@ -110,22 +118,33 @@ hook = NangilaHook(mask_bytes=mask, config=config)
 ### Configuration Options
 
 ```python
-from nangila import NangilaConfig
+from nangila.ddp import register_nangila_hook
+from nangila import SyncMode
 
 # Conservative (safer, less compression)
-config = NangilaConfig.conservative()
+hook = register_nangila_hook(
+    model,
+    threshold=0.97,      # Higher threshold = fewer Passengers
+    warmup_steps=100,
+)
 
 # Aggressive (more compression)
-config = NangilaConfig.aggressive()
+hook = register_nangila_hook(
+    model,
+    threshold=0.90,      # Lower threshold = more Passengers
+    warmup_steps=50,
+)
 
-# Custom
-config = NangilaConfig(
-    momentum=0.9,           # Predictor momentum
-    threshold=0.95,         # Correlation threshold for Passengers
-    warmup_steps=1000,      # Steps before enabling compression
-    quantize_bits=4,        # INT4 quantization
+# Custom with CUDA error checking
+hook = register_nangila_hook(
+    model,
+    threshold=0.95,
+    warmup_steps=100,
+    sync_mode=SyncMode.PERIODIC,  # Balanced error checking
 )
 ```
+
+> **Note**: Advanced configuration (momentum, quantization bits) is currently hardcoded in the Rust core. Python API exposes `threshold` and `warmup_steps` parameters.
 
 ## 📊 Benchmarks
 
@@ -133,33 +152,35 @@ config = NangilaConfig(
 
 | Source | Factor | Description |
 |--------|--------|-------------|
-| FP32 → INT4 | 8× | 32 bits → 4 bits |
-| Topology (Passengers) | 1-4× | Skip correlated layers |
-| Predictive Residuals | 1.5-2× | Lower entropy signals |
+| FP32 → INT4 | 8× | 32 bits → 4 bits (guaranteed) |
+| Topology (Passengers) | 1-3× | Skip correlated layers (typical) |
+| Predictive Residuals | 1.2-1.8× | Lower entropy signals (model-dependent) |
+
+**Typical Combined**: 20-40× compression  
+**Best Case**: Up to 64× (50%+ Passengers, high predictability)
 
 ### Compression by Threshold (τ)
 
 The `threshold` parameter controls compression vs. quality tradeoff:
 
-| τ Value | Passenger Layers | Compression | Safety |
-|---------|------------------|-------------|--------|
-| **τ=0.99** | ~5% | **10-15×** | 🟢 Conservative |
-| **τ=0.97** | ~20% | **20-30×** | 🟢 Recommended |
-| **τ=0.95** (default) | ~35% | **32-50×** | � Safe (default) |
-| **τ=0.90** | ~60% | **64-80×** | � Safe with Safe Mode |
+| τ Value | Passenger Layers | Typical Compression | Safety |
+|---------|------------------|---------------------|--------|
+| **τ=0.99** | ~5% | **10-15×** | 🟢 Very Conservative |
+| **τ=0.97** | ~15-25% | **18-28×** | 🟢 Conservative (recommended) |
+| **τ=0.95** (default) | ~25-40% | **24-40×** | 🟡 Balanced |
+| **τ=0.90** | ~40-60% | **32-50×** | 🟡 Aggressive (use with Safe Mode) |
 
-> **✅ All settings are safe!** Nangila includes **Safe Mode** which automatically monitors gradient quality and promotes Passengers back to Drivers if issues are detected. This means you can use aggressive settings like τ=0.90 without risking training stability.
+> **✅ All settings are safe!** Nangila includes **Safe Mode** which automatically monitors gradient quality and promotes Passengers back to Drivers if issues are detected.
 
 ```python
-# Adjust threshold for your use case
+from nangila import Sculptor
+
+# Adjust threshold during calibration
 sculptor = Sculptor(threshold=0.97)       # More conservative
 sculptor = Sculptor(threshold=0.90)       # More aggressive
-
-# Or via config
-config = NangilaConfig(threshold=0.95)    # Custom threshold
 ```
 
-### Test Results (2x RTX 4090)
+### Preliminary Test Results (2x RTX 4090)
 
 | Test | Result |
 |------|--------|
@@ -175,9 +196,11 @@ config = NangilaConfig(threshold=0.95)    # Custom threshold
 | Setting | Traffic/Step | Compression | Notes |
 |---------|--------------|-------------|-------|
 | Standard DDP | 28 GB | 1× | Baseline |
-| Nangila τ=0.97 | 1.4 GB | 20× | Conservative |
-| Nangila τ=0.95 | 875 MB | 32× | Default |
-| Nangila τ=0.90 | 350 MB | 80× | Aggressive |
+| Nangila τ=0.97 | ~1.4 GB | ~20× | Conservative |
+| Nangila τ=0.95 | ~1.0 GB | ~28× | Balanced (default) |
+| Nangila τ=0.90 | ~700 MB | ~40× | Aggressive |
+
+> **Note**: Values are estimates based on ideal conditions. Actual compression depends on model architecture, optimization dynamics, and Passenger detection accuracy.
 
 ## 🏗️ Architecture
 
@@ -190,8 +213,8 @@ config = NangilaConfig(threshold=0.95)    # Custom threshold
 ├─────────────────┼──────────────────┼────────────────────────────┤
 │ • Predictor     │ • Fused kernels  │ • FFI for NCCL intercept   │
 │ • Quantizer     │ • FP16/BF16      │ • Python bindings          │
-│ • Sculptor      │                  │ • DDP comm hook            │
-│ • Topology Mask │                  │                            │
+│ • Sculptor      │ • GPU-native     │ • DDP comm hook            │
+│ • Topology Mask │   state mgmt     │                            │
 └─────────────────┴──────────────────┴────────────────────────────┘
 ```
 
@@ -201,15 +224,92 @@ config = NangilaConfig(threshold=0.95)    # Custom threshold
 - **Quantizer**: INT4 stochastic quantization (Fast Head)
 - **Sculptor**: Offline correlation analysis for topology discovery
 - **Topology Mask**: Driver/Passenger layer classification
+- **GPU State Manager**: RAII-safe persistent CUDA buffers (zero CPU transfers)
 
 ## 🔬 Features
 
+### Current
 - ✅ **INT4 Quantization** — 8× compression from precision reduction
-- ✅ **Predictive Coding** — 2-4× from residual transmission
+- ✅ **Predictive Coding** — Residual transmission for lower entropy
 - ✅ **Topology Sculpting** — Skip Passenger layers entirely
 - ✅ **FP16/BF16 Support** — Compatible with mixed precision training
 - ✅ **Safe Mode** — Automatic fallback if compression degrades quality
-- ✅ **Zero Dependencies** — Pure Rust core, minimal Python deps
+- ✅ **CUDA Error Handling** — Configurable sync modes (ASYNC/PERIODIC/ALWAYS)
+- ✅ **GPU-Native Path** — Zero CPU transfers (implemented, pending hardware validation)
+- ✅ **Stochastic Quantization** — Mathematically correct hash-based PRNG
+- ✅ **DDP Integration** — Full PyTorch DDP support
+- ✅ **FSDP Integration** — Beta (2-GPU validated, large-scale pending)
+
+### In Development
+- 🚧 **Large-Scale Validation** — Multi-node (8+ GPU) testing for FSDP
+- 🚧 **Performance Benchmarking** — Comprehensive latency and throughput measurements
+- 🚧 **Adaptive Monitoring** — Fast-fail drift detection for Safe Mode
+- 🚧 **Auto-calibration** — Automatic threshold tuning for Sculptor
+
+## 🗺️ Roadmap
+
+### Phase 1: Core Stability ✅
+- [x] Fix CUDA stochastic quantization
+- [x] Implement GPU-native compression path
+- [x] Resolve critical safety issues
+
+### Phase 2: Production Readiness 🚧
+- [ ] **Comprehensive Test Suite** — Multi-GPU validation on A100/H100
+  - [ ] Large-scale model testing (7B, 13B, 70B parameter models)
+  - [ ] Multi-node (8+ node) scaling tests
+  - [ ] Convergence validation (match uncompressed baseline)
+  - [ ] Memory leak testing (10K+ training steps)
+- [/] **FSDP Integration** — Full PyTorch FSDP support
+  - [x] Basic FSDP hook implementation
+  - [x] Preliminary gradient sync tests (2-GPU)
+  - [ ] Large-scale FSDP validation (8+ GPUs)
+  - [ ] Mixed-precision FSDP compatibility
+  - [ ] Gradient accumulation support
+- [ ] **Performance Optimization**
+  - [ ] Adaptive Safe Mode monitoring
+  - [ ] Auto-calibration for Sculptor
+  - [ ] Kernel fusion optimizations
+
+### Phase 3: Advanced Features 📋
+- [ ] **Protocol Modelling** — Learned compression strategies
+  - [ ] Neural codec for gradient residuals
+  - [ ] Adaptive bitrate allocation
+  - [ ] Context-aware prediction
+- [ ] **Mixture of Experts (MoE)** — Specialized support for MoE architectures
+  - [ ] Expert-aware topology masking
+  - [ ] Sparse gradient handling
+  - [ ] Router gradient optimization
+- [ ] **Communication Backends**
+  - [ ] InfiniBand optimization
+  - [ ] GCP gVNIC integration
+
+## ⚙️ CUDA Error Handling
+
+Nangila includes comprehensive CUDA kernel error handling with three synchronization modes:
+
+```python
+from nangila import SyncMode
+from nangila.ddp import register_nangila_hook
+
+# Production (maximum speed, minimal error checking)
+hook = register_nangila_hook(model, sync_mode=SyncMode.ASYNC)
+
+# Default (balanced - sync every 100 calls)
+hook = register_nangila_hook(model, sync_mode=SyncMode.PERIODIC)
+
+# Debug (catch all errors immediately)
+hook = register_nangila_hook(model, sync_mode=SyncMode.ALWAYS)
+```
+
+### Sync Modes
+
+| Mode | Overhead | Error Detection | Use Case |
+|------|----------|-----------------|----------|
+| **ASYNC** | ~0% | Delayed | Production (maximum speed) |
+| **PERIODIC** | ~1-2% | Good | Default (balanced) |
+| **ALWAYS** | ~10-20% | Immediate | Debugging |
+
+**Recommendation**: Use `PERIODIC` (default) for production. Switch to `ALWAYS` if you encounter issues.
 
 ## 📁 Project Structure
 
@@ -234,6 +334,15 @@ torchrun --nproc_per_node=2 tests/test_ddp.py
 torchrun --nproc_per_node=2 tests/test_stress.py
 python tests/test_sculptor.py
 ```
+
+## 🤝 Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+Areas where we especially need help:
+- Large-scale testing (8+ GPUs)
+- Integration with popular frameworks (DeepSpeed, Megatron-LM)
+- Documentation and examples
 
 ## 📖 Citation
 

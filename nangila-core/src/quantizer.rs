@@ -54,6 +54,10 @@ pub struct Quantizer {
     gamma_ema: f32,
     /// EMA momentum for gamma updates
     gamma_momentum: f32,
+    /// RNG seed for stochastic rounding (None = deterministic)
+    rng_seed: Option<u64>,
+    /// Counter for reproducible randomness
+    rng_counter: u64,
 }
 
 impl Quantizer {
@@ -65,6 +69,8 @@ impl Quantizer {
             dynamic_gamma,
             gamma_ema: 1.0,
             gamma_momentum: 0.99,
+            rng_seed: Some(42), // Default: stochastic with fixed seed
+            rng_counter: 0,
         }
     }
 
@@ -92,7 +98,25 @@ impl Quantizer {
     }
 
     /// Quantize a tensor to INT4
-    pub fn quantize(&mut self, tensor: &Tensor) -> CompressedTensor {
+    /// 
+    /// layer_id and step ensure deterministic RNG across all ranks - 
+    /// this is CRITICAL for gradient consensus in distributed training.
+    /// 
+    /// global_offset: Starting index of this tensor in the global parameter space.
+    /// For DDP (full replication), this is always 0.
+    /// For FSDP (sharding), this is the shard's starting index in the full parameter.
+    pub fn quantize(&mut self, tensor: &Tensor, layer_id: u32, step: u64) -> CompressedTensor {
+        self.quantize_with_offset(tensor, layer_id, step, 0)
+    }
+
+    /// Quantize with explicit global offset for FSDP compatibility
+    pub fn quantize_with_offset(
+        &mut self,
+        tensor: &Tensor,
+        layer_id: u32,
+        step: u64,
+        global_offset: usize,
+    ) -> CompressedTensor {
         if tensor.numel() == 0 {
             return CompressedTensor::default();
         }
@@ -111,11 +135,17 @@ impl Quantizer {
         let max_val = (1i8 << (self.bits - 1)) - 1; // 7 for INT4
         let min_val = -(1i8 << (self.bits - 1)); // -8 for INT4
 
-        // Quantize with stochastic rounding
+        // Build deterministic hash base from layer_id + step (same across all ranks)
+        // This ensures identical stochastic rounding decisions across nodes
+        let hash_base = (layer_id as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(step.wrapping_mul(0xBF58476D1CE4E5B9));
+
         let quantized: Vec<i8> = tensor
             .data
             .iter()
-            .map(|&x| {
+            .enumerate()
+            .map(|(local_idx, &x)| {
                 // Guard against NaN/Inf - treat as zero
                 let x = if x.is_nan() || x.is_infinite() {
                     0.0
@@ -124,15 +154,41 @@ impl Quantizer {
                 };
 
                 let scaled = x / gamma;
-                // Stochastic rounding: round probabilistically based on fractional part
                 let floor = scaled.floor();
-                let frac = scaled - floor;
+                let frac = (scaled - floor).abs();
 
-                // Deterministic for now (can add randomness later)
-                let rounded = if frac >= 0.5 {
-                    (floor + 1.0) as i8
+                // Stochastic rounding: round up with probability = frac
+                let rounded = if let Some(seed) = self.rng_seed {
+                    // CRITICAL: Use global_offset + local_idx for FSDP determinism
+                    // This ensures that element at global position N gets the same
+                    // random value regardless of which rank owns it
+                    let global_idx = global_offset + local_idx;
+                    
+                    // Use cheap hash for reproducible randomness
+                    // hash_base includes layer_id + step (same across all ranks)
+                    // Adding seed and GLOBAL element index for full determinism
+                    let hash_input = seed
+                        .wrapping_mul(0x9E3779B97F4A7C15)
+                        .wrapping_add(hash_base)
+                        .wrapping_add(global_idx as u64);
+                    let hash = hash_input ^ (hash_input >> 30);
+                    let hash = hash.wrapping_mul(0xBF58476D1CE4E5B9);
+                    let hash = hash ^ (hash >> 27);
+                    let hash = hash.wrapping_mul(0x94D049BB133111EB);
+                    let random_01 = (hash as f32) / (u64::MAX as f32);
+                    
+                    if frac >= random_01 {
+                        if scaled >= 0.0 { (floor + 1.0) as i8 } else { floor as i8 }
+                    } else {
+                        if scaled >= 0.0 { floor as i8 } else { (floor + 1.0) as i8 }
+                    }
                 } else {
-                    floor as i8
+                    // Deterministic rounding (fallback)
+                    if frac >= 0.5 {
+                        (floor + 1.0) as i8
+                    } else {
+                        floor as i8
+                    }
                 };
 
                 // Clamp to valid range
@@ -209,6 +265,64 @@ impl Quantizer {
         values
     }
 
+    /// Dequantize a specific range of the compressed tensor
+    pub fn dequantize_partial(
+        &self,
+        compressed: &CompressedTensor,
+        start_index: usize,
+        end_index: usize,
+    ) -> Tensor {
+        if compressed.numel == 0 {
+            return Tensor::zeros(vec![0]);
+        }
+
+        let numel = compressed.numel;
+        let start = start_index.min(numel);
+        let end = end_index.min(numel);
+        
+        if start >= end {
+            return Tensor::zeros(vec![0]);
+        }
+
+        let output_len = end - start;
+        
+        // Calculate byte offsets
+        // Each byte holds 2 values. 
+        // Index i is at byte i/2.
+        // If i is even, it's the low nibble. If odd, high nibble.
+        
+        let byte_start = start / 2;
+        let byte_end = (end + 1) / 2; // +1 to cover the last element if it's the first in a byte
+        let byte_end = byte_end.min(compressed.data.len());
+
+        let relevant_bytes = &compressed.data[byte_start..byte_end];
+        
+        let mut values = Vec::with_capacity(output_len);
+        
+        for (i, &byte) in relevant_bytes.iter().enumerate() {
+            let global_byte_idx = byte_start + i;
+            let val_idx_base = global_byte_idx * 2;
+
+            // Low nibble (0th in byte, even index)
+            if val_idx_base >= start && val_idx_base < end {
+                let low = (byte & 0x0F) as i8;
+                let low = if low & 0x08 != 0 { low | !0x0F } else { low };
+                values.push(low as f32 * compressed.gamma);
+            }
+
+            // High nibble (1st in byte, odd index)
+            let val_idx_next = val_idx_base + 1;
+            if val_idx_next >= start && val_idx_next < end {
+                 let high = ((byte >> 4) & 0x0F) as i8;
+                 let high = if high & 0x08 != 0 { high | !0x0F } else { high };
+                 values.push(high as f32 * compressed.gamma);
+            }
+        }
+
+        // Shape of the partial tensor is just linear [output_len]
+        Tensor::new(values, vec![output_len])
+    }
+
     /// Get current gamma value
     pub fn gamma(&self) -> f32 {
         self.gamma_ema
@@ -241,7 +355,7 @@ mod tests {
         quantizer.set_gamma(0.1); // Fixed gamma for testing
 
         let original = Tensor::new(vec![0.1, 0.2, -0.3, 0.5, -0.7], vec![5]);
-        let compressed = quantizer.quantize(&original);
+        let compressed = quantizer.quantize(&original, 0, 0);
         let recovered = quantizer.dequantize(&compressed);
 
         // Check values are close (within quantization error)
@@ -262,7 +376,7 @@ mod tests {
         let mut quantizer = Quantizer::int4();
 
         let tensor = Tensor::new(vec![0.1; 1000], vec![1000]);
-        let compressed = quantizer.quantize(&tensor);
+        let compressed = quantizer.quantize(&tensor, 0, 0);
 
         // 1000 FP32 = 4000 bytes
         // 1000 INT4 = 500 bytes + overhead

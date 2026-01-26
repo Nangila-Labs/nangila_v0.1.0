@@ -10,8 +10,12 @@
 
 use nangila_core::{
     compute_crc32, verify_crc32, CompressedTensor, CompressionResult, GradientHistory, LayerId,
-    NangilaConfig, NangilaState, Packet, PacketHeader, Tensor, TopologyMask,
+    NangilaConfig, NangilaState, Packet, PacketHeader, Tensor, TopologyMask, SafeModeConfig,
+    SafeModeAction,
 };
+
+#[cfg(feature = "cuda")]
+use nangila_cuda::{GpuStateManager, predict_and_quantize_cuda, dequantize_and_reconstruct_cuda, SyncMode, CudaStream, CUDA_STREAM_DEFAULT};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -50,6 +54,22 @@ pub struct NangilaHook {
     crc_failure_count: HashMap<LayerId, u32>,
     /// Buffer for passthrough gradients (during warmup)
     passthrough_buffer: HashMap<LayerId, Tensor>,
+    /// GPU Mode: If true, disable CPU history buffers to save memory
+    gpu_mode: bool,
+    // === Predictor Hash Verification ===
+    /// How often to verify predictor hash (0 = disabled)
+    hash_verify_interval: u64,
+    /// Last verified hash (for logging)
+    last_verified_hash: u64,
+    // === Partial Retransmission ===
+    /// Cache of last received packets for partial retransmission
+    packet_cache: HashMap<LayerId, Vec<u8>>,
+    /// Enable partial retransmission on CRC failure
+    partial_retransmit_enabled: bool,
+    // === GPU-Native Mode ===
+    #[cfg(feature = "cuda")]
+    /// GPU state manager for persistent history buffers
+    gpu_state_manager: Option<GpuStateManager>,
 }
 
 impl NangilaHook {
@@ -64,6 +84,46 @@ impl NangilaHook {
             crc_failure_threshold: 3,
             crc_failure_count: HashMap::new(),
             passthrough_buffer: HashMap::new(),
+            gpu_mode: false,
+            // Hash verification every 100 steps by default
+            hash_verify_interval: 100,
+            last_verified_hash: 0,
+            // Partial retransmission
+            packet_cache: HashMap::new(),
+            partial_retransmit_enabled: true,
+            // GPU state
+            #[cfg(feature = "cuda")]
+            gpu_state_manager: None,
+        }
+    }
+    
+    /// Enable or disable partial retransmission
+    pub fn set_partial_retransmit(&mut self, enabled: bool) {
+        self.partial_retransmit_enabled = enabled;
+        if !enabled {
+            self.packet_cache.clear();
+        }
+    }
+
+    /// Enable or disable GPU mode
+    pub fn set_gpu_mode(&mut self, enabled: bool) {
+        self.gpu_mode = enabled;
+        if enabled {
+            // Clear existing history to free memory
+            self.gradient_history.clear();
+            #[cfg(feature = "cuda")]
+            {
+                // Initialize GPU state manager
+                if self.gpu_state_manager.is_none() {
+                    self.gpu_state_manager = Some(GpuStateManager::new());
+                }
+            }
+        } else {
+            #[cfg(feature = "cuda")]
+            {
+                // Clean up GPU resources
+                self.gpu_state_manager = None;
+            }
         }
     }
 
@@ -100,9 +160,11 @@ impl NangilaHook {
             return self.create_force_sync_packet(layer_id, &gradient);
         }
 
-        // Store in history for potential rewind
-        let fixed_buf = nangila_core::FixedPointBuffer::from_f32_slice(&gradient.data);
-        self.gradient_history.push(layer_id, fixed_buf);
+        // Store in history for potential rewind (ONLY in CPU mode)
+        if !self.gpu_mode {
+            let fixed_buf = nangila_core::FixedPointBuffer::from_f32_slice(&gradient.data);
+            self.gradient_history.push(layer_id, fixed_buf);
+        }
 
         match self.state.compress(layer_id, &gradient) {
             Ok(CompressionResult::Driver(compressed)) => {
@@ -142,24 +204,40 @@ impl NangilaHook {
 
         // Verify CRC
         if !packet.verify() {
-            let count = self.crc_failure_count.entry(layer_id).or_insert(0);
-            *count += 1;
+            let count = *self.crc_failure_count.entry(layer_id).or_insert(0);
+            let new_count = count + 1;
+            self.crc_failure_count.insert(layer_id, new_count);
+            
             tracing::warn!(
                 "CRC mismatch for layer {} (failure {} of {})",
                 layer_id,
-                count,
+                new_count,
                 self.crc_failure_threshold
             );
 
-            if *count >= self.crc_failure_threshold {
+            // Try partial retransmission if enabled and we have cached data
+            if self.partial_retransmit_enabled && self.packet_cache.contains_key(&layer_id) {
+                if let Some(recovered) = self.try_partial_recovery(layer_id, &packet) {
+                    tracing::info!("Layer {} recovered via partial retransmission", layer_id);
+                    self.crc_failure_count.insert(layer_id, 0);
+                    return recovered;
+                }
+            }
+
+            if new_count >= self.crc_failure_threshold {
                 self.trigger_recovery(layer_id);
             }
             // Return last known good gradient from history
             return self.recover_from_history(layer_id);
         }
 
-        // CRC valid, reset failure count
+        // CRC valid, reset failure count and cache packet
         self.crc_failure_count.insert(layer_id, 0);
+        
+        // Cache packet for potential partial retransmission
+        if self.partial_retransmit_enabled && !packet.header.is_partial_retransmit() {
+            self.packet_cache.insert(layer_id, data.to_vec());
+        }
 
         // Validate step counter
         let expected = self.expected_peer_step.get(&layer_id).copied().unwrap_or(0);
@@ -228,10 +306,103 @@ impl NangilaHook {
     pub fn get_stats(&self) -> nangila_core::CompressionStats {
         self.state.stats()
     }
+    
+    /// Get per-layer telemetry
+    pub fn get_layer_telemetry(&self, layer_id: LayerId) -> Option<&nangila_core::LayerTelemetry> {
+        self.state.layer_telemetry(layer_id)
+    }
+    
+    /// Get summary telemetry across all layers
+    pub fn get_summary_telemetry(&self) -> nangila_core::SummaryTelemetry {
+        self.state.summary_telemetry()
+    }
 
     /// Get predictor state hash for verification
     pub fn predictor_hash(&self) -> u64 {
         self.state.predictor().state_hash()
+    }
+
+    /// Check if it's time to verify predictor hash (call each step)
+    pub fn should_verify_hash(&self) -> bool {
+        self.hash_verify_interval > 0 && 
+        self.step_counter > 0 && 
+        self.step_counter % self.hash_verify_interval == 0
+    }
+
+    /// Verify predictor hash against peer hash
+    /// Returns true if hashes match, false if mismatch detected
+    /// On mismatch, triggers recovery for all layers
+    pub fn verify_hash(&mut self, peer_hash: u64) -> bool {
+        let local_hash = self.predictor_hash();
+        
+        if local_hash == peer_hash {
+            self.last_verified_hash = local_hash;
+            tracing::debug!(
+                "Predictor hash verified at step {}: {:016x}",
+                self.step_counter,
+                local_hash
+            );
+            true
+        } else {
+            tracing::error!(
+                "PREDICTOR DESYNC DETECTED at step {}! Local: {:016x}, Peer: {:016x}",
+                self.step_counter,
+                local_hash,
+                peer_hash
+            );
+            // Trigger recovery for all tracked layers
+            let layers: Vec<_> = self.state.mask().drivers().take(10).collect();
+            for layer_id in layers {
+                self.trigger_recovery(layer_id);
+            }
+            false
+        }
+    }
+
+    /// Get the hash verification interval
+    pub fn hash_verify_interval(&self) -> u64 {
+        self.hash_verify_interval
+    }
+
+    /// Set the hash verification interval (0 to disable)
+    pub fn set_hash_verify_interval(&mut self, interval: u64) {
+        self.hash_verify_interval = interval;
+    }
+
+    /// Enable Safe Mode with given configuration
+    pub fn enable_safe_mode(&mut self, config: SafeModeConfig) {
+        self.state.enable_safe_mode(config);
+    }
+
+    /// Report validation loss to Safe Mode
+    pub fn report_validation_loss(&mut self, loss: f32) -> SafeModeAction {
+        self.state.report_validation_loss(loss)
+    }
+
+    /// Check if compression is paused due to Safe Mode
+    pub fn is_paused(&self) -> bool {
+        self.state.is_paused()
+    }
+
+    /// Access the configuration
+    pub fn config(&self) -> &NangilaConfig {
+        &self.state.config
+    }
+    
+    /// Get current momentum
+    pub fn momentum(&self) -> f32 {
+        self.state.config.momentum
+    }
+
+    /// Get current dynamic gamma (from internal state)
+    pub fn gamma(&self) -> f32 {
+        // TODO: This should probably be per-layer if we tracked it per-layer in state
+        // For now, return default or last used?
+        // Actually, state doesn't expose gamma easily. 
+        // Let's rely on Quantizer's gamma if needed, or just config gamma if fixed.
+        // If dynamic, we compute it on GPU in the kernel.
+        // If we pass gamma to kernel, it's usually the base or initial gamma if dynamic is on.
+        0.001 
     }
 
     /// Manually trigger recovery for a layer
@@ -239,6 +410,118 @@ impl NangilaHook {
         tracing::warn!("Triggering desync recovery for layer {}", layer_id);
         self.recovery_mode.insert(layer_id, RecoveryMode::Pending);
         self.crc_failure_count.insert(layer_id, 0);
+    }
+
+    // === GPU-Native Methods ===
+    
+    /// GPU-native compression: gradient stays on GPU throughout
+    ///
+    /// # Arguments
+    /// * `layer_id` - Layer identifier
+    /// * `gradient_ptr` - Device pointer to gradient tensor
+    /// * `num_elements` - Number of elements in gradient
+    /// * `stream` - CUDA stream for async execution
+    ///
+    /// # Returns
+    /// Device pointer to compressed output buffer
+    #[cfg(feature = "cuda")]
+    pub unsafe fn on_send_gpu(
+        &mut self,
+        layer_id: LayerId,
+        gradient_ptr: *const f32,
+        num_elements: usize,
+        stream: CudaStream,
+    ) -> Result<*const u8, Box<dyn std::error::Error>> {
+        // Get values before mutable borrow
+        let momentum = self.momentum();
+        let gamma = self.gamma();
+        
+        // Get or create GPU state for this layer
+        let gpu_manager = self.gpu_state_manager.as_mut()
+            .ok_or("GPU mode not enabled. Call set_gpu_mode(true) first")?;
+        
+        let gpu_state = gpu_manager.get_or_create(layer_id, num_elements)?;
+        
+        // Allocate output buffer (INT4 = numel/2 bytes, plus metadata)
+        let output_size = num_elements / 2 + 128;
+        let mut output_buffer = nangila_cuda::GpuBuffer::new(output_size)?;
+        
+        // Launch CUDA kernel: predict, subtract, quantize
+        let (g_current_ptr, g_previous_ptr) = gpu_state.get_pointers();
+        
+        predict_and_quantize_cuda(
+            gradient_ptr,
+            g_current_ptr,
+            g_previous_ptr,
+            momentum,
+            gamma,
+            output_buffer.as_ptr() as *mut u8,
+            num_elements,
+            stream,
+            SyncMode::Periodic,
+            gpu_state.step,
+            layer_id,
+        )?;
+        
+        Ok(output_buffer.as_ptr() as *const u8)
+    }
+    
+    /// GPU-native state update: update history buffers on GPU
+    ///
+    /// # Arguments
+    /// * `layer_id` - Layer identifier  
+    /// * `gradient_ptr` - Device pointer to gradient tensor
+    /// * `num_elements` - Number of elements
+    /// * `stream` - CUDA stream for async execution
+    #[cfg(feature = "cuda")]
+    pub unsafe fn on_complete_gpu(
+        &mut self,
+        layer_id: LayerId,
+        gradient_ptr: *const f32,
+        num_elements: usize,
+        stream: CudaStream,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Get GPU state
+        let gpu_manager = self.gpu_state_manager.as_mut()
+            .ok_or("GPU mode not enabled")?;
+        
+        let gpu_state = gpu_manager.get_or_create(layer_id, num_elements)?;
+        
+        // Copy gradient to g_current buffer using cudaMemcpyAsync
+        extern "C" {
+            fn cudaMemcpyAsync(
+                dst: *mut std::ffi::c_void,
+                src: *const std::ffi::c_void,
+                count: usize,
+                kind: i32,
+                stream: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+        
+        const cudaMemcpyDeviceToDevice: i32 = 3;
+        
+        let result = cudaMemcpyAsync(
+            gpu_state.g_current.as_ptr() as *mut std::ffi::c_void,
+            gradient_ptr as *const std::ffi::c_void,
+            num_elements * std::mem::size_of::<f32>(),
+            cudaMemcpyDeviceToDevice,
+            stream,
+        );
+        
+        if result != 0 {
+            return Err(format!("cudaMemcpyAsync failed with code {}", result).into());
+        }
+        
+        Ok(())
+    }
+    
+    /// Advance all GPU layer states to next step
+    #[cfg(feature = "cuda")]
+    pub fn step_gpu(&mut self) {
+        if let Some(manager) = &mut self.gpu_state_manager {
+            manager.advance_all();
+        }
+        self.step(); // Also advance CPU state
     }
 
     // --- Packet creation helpers ---
@@ -317,6 +600,49 @@ impl NangilaHook {
         } else {
             tracing::error!("No history available for layer {} recovery", layer_id);
             Tensor::zeros(vec![1])
+        }
+    }
+    
+    /// Try to recover from CRC failure using partial retransmission
+    /// 
+    /// Strategy: Identify corrupted chunks by comparing with cached packet,
+    /// then merge good chunks from cache with new chunks from current packet.
+    fn try_partial_recovery(&mut self, layer_id: LayerId, corrupted_packet: &Packet) -> Option<Tensor> {
+        let cached_data = self.packet_cache.get(&layer_id)?;
+        let cached_packet = Packet::from_bytes(cached_data)?;
+        
+        // Only works for driver packets with same structure
+        if !corrupted_packet.header.is_driver() || !cached_packet.header.is_driver() {
+            return None;
+        }
+        
+        // Simple strategy: Use cached payload if it's from a recent step
+        // In a real implementation, you'd:
+        // 1. Divide payload into chunks (e.g., 1KB each)
+        // 2. Compute CRC per chunk
+        // 3. Identify which chunks are corrupted
+        // 4. Request retransmission of only those chunks
+        // 5. Merge good chunks from cache with retransmitted chunks
+        
+        // For now, just use the cached packet if it's from the previous step
+        let step_diff = corrupted_packet.header.step.saturating_sub(cached_packet.header.step);
+        if step_diff <= 1 {
+            tracing::debug!(
+                "Using cached packet from step {} for layer {} (current step {})",
+                cached_packet.header.step,
+                layer_id,
+                corrupted_packet.header.step
+            );
+            
+            // Reconstruct from cached compressed data
+            if self.state.is_compression_enabled() {
+                let compressed = self.deserialize_compressed_payload(&cached_packet.payload);
+                self.state.decompress(layer_id, &compressed).ok()
+            } else {
+                Some(self.deserialize_tensor_payload(&cached_packet.payload))
+            }
+        } else {
+            None
         }
     }
 

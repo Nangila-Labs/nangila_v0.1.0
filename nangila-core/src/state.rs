@@ -10,6 +10,61 @@ use crate::{
 };
 use std::collections::HashMap;
 
+/// Per-layer compression telemetry
+#[derive(Debug, Clone, Default)]
+pub struct LayerTelemetry {
+    /// Total bytes before compression
+    pub total_original_bytes: u64,
+    /// Total bytes after compression
+    pub total_compressed_bytes: u64,
+    /// Number of compressions
+    pub compression_count: u64,
+    /// Average compression ratio
+    pub avg_compression_ratio: f32,
+    /// Min compression ratio seen
+    pub min_compression_ratio: f32,
+    /// Max compression ratio seen
+    pub max_compression_ratio: f32,
+    /// Average prediction error (L2 norm of residual / L2 norm of gradient)
+    pub avg_prediction_error: f32,
+    /// Number of times this layer was a passenger (skipped)
+    pub passenger_skip_count: u64,
+}
+
+impl LayerTelemetry {
+    fn new() -> Self {
+        Self {
+            total_original_bytes: 0,
+            total_compressed_bytes: 0,
+            compression_count: 0,
+            avg_compression_ratio: 0.0,
+            min_compression_ratio: f32::MAX,
+            max_compression_ratio: 0.0,
+            avg_prediction_error: 0.0,
+            passenger_skip_count: 0,
+        }
+    }
+    
+    fn record_compression(&mut self, original_bytes: usize, compressed_bytes: usize, prediction_error: f32) {
+        self.total_original_bytes += original_bytes as u64;
+        self.total_compressed_bytes += compressed_bytes as u64;
+        self.compression_count += 1;
+        
+        let ratio = original_bytes as f32 / compressed_bytes.max(1) as f32;
+        self.min_compression_ratio = self.min_compression_ratio.min(ratio);
+        self.max_compression_ratio = self.max_compression_ratio.max(ratio);
+        
+        // Update running average
+        let alpha = 0.1; // EMA smoothing
+        self.avg_compression_ratio = alpha * ratio + (1.0 - alpha) * self.avg_compression_ratio;
+        self.avg_prediction_error = alpha * prediction_error + (1.0 - alpha) * self.avg_prediction_error;
+    }
+    
+    fn record_passenger_skip(&mut self) {
+        self.passenger_skip_count += 1;
+    }
+}
+
 /// Main state container for Nangila compression
 #[derive(Debug)]
 pub struct NangilaState {
@@ -31,6 +86,8 @@ pub struct NangilaState {
     safe_mode: Option<SafeMode>,
     /// Whether compression is paused due to divergence
     paused_for_divergence: bool,
+    /// Per-layer compression telemetry
+    layer_telemetry: HashMap<LayerId, LayerTelemetry>,
 }
 
 /// Result of compression for a single layer
@@ -65,6 +122,7 @@ impl NangilaState {
             compression_enabled: false,
             safe_mode: None,
             paused_for_divergence: false,
+            layer_telemetry: HashMap::new(),
         }
     }
 
@@ -78,7 +136,7 @@ impl NangilaState {
     /// Returns the compression result based on layer role and warmup state.
     pub fn compress(&mut self, layer_id: LayerId, gradient: &Tensor) -> Result<CompressionResult> {
         // During warmup, pass through raw gradients
-        if !self.compression_enabled {
+        if !self.is_compression_enabled() {
             // Still update predictor during shadow-run phase
             if self.step >= self.config.warmup_steps {
                 self.predictor.update(layer_id, gradient.clone());
@@ -91,13 +149,38 @@ impl NangilaState {
 
         if role.is_passenger() {
             // Passengers send nothing
+            self.layer_telemetry
+                .entry(layer_id)
+                .or_insert_with(LayerTelemetry::new)
+                .record_passenger_skip();
             return Ok(CompressionResult::Passenger);
         }
 
         // Driver: compute residual and quantize
         let prediction = self.predictor.predict(layer_id)?;
         let residual = gradient.sub(&prediction);
-        let compressed = self.quantizer.quantize(&residual);
+        
+        // Compute prediction error for telemetry
+        let grad_norm = gradient.norm();
+        let residual_norm = residual.norm();
+        let prediction_error = if grad_norm > 1e-6 {
+            residual_norm / grad_norm
+        } else {
+            0.0
+        };
+        
+        // Record error for adaptive momentum
+        self.predictor.record_error(layer_id, prediction_error);
+
+        let compressed = self.quantizer.quantize(&residual, layer_id, self.step as u64);
+        
+        // Record telemetry
+        let original_bytes = gradient.numel() * 4; // FP32
+        let compressed_bytes = compressed.size_bytes();
+        self.layer_telemetry
+            .entry(layer_id)
+            .or_insert_with(LayerTelemetry::new)
+            .record_compression(original_bytes, compressed_bytes, prediction_error);
 
         Ok(CompressionResult::Driver(compressed))
     }
@@ -119,6 +202,42 @@ impl NangilaState {
         } else {
             self.reconstructor
                 .synthesize_passenger(layer_id, &self.mask)?
+        };
+
+        Ok(gradient)
+    }
+
+    /// Decompress a specific shard of the gradient
+    ///
+    /// For FSDP: Drivers are dequantized from compressed data.
+    /// Passengers are synthesized from their cached source driver.
+    /// Note: For passengers, the source driver must be reconstructed/cached first.
+    pub fn decompress_partial(
+        &mut self,
+        layer_id: LayerId,
+        compressed: &CompressedTensor,
+        start_index: usize,
+        end_index: usize,
+    ) -> Result<Tensor> {
+        let role = self.mask.get_role(layer_id)?;
+
+        let gradient = if role.is_driver() {
+            self.reconstructor.reconstruct_driver_partial(
+                layer_id,
+                compressed,
+                &self.predictor,
+                start_index,
+                end_index,
+            )?
+        } else {
+            // For passengers, we need the source driver to be cached
+            // This requires drivers to be reconstructed before passengers in FSDP
+            self.reconstructor.synthesize_passenger_partial(
+                layer_id,
+                &self.mask,
+                start_index,
+                end_index,
+            )?
         };
 
         Ok(gradient)
@@ -165,7 +284,7 @@ impl NangilaState {
 
     /// Check if compression is currently enabled
     pub fn is_compression_enabled(&self) -> bool {
-        self.compression_enabled
+        self.compression_enabled && !self.paused_for_divergence
     }
 
     /// Get the current step
@@ -202,6 +321,59 @@ impl NangilaState {
             num_passengers: self.mask.num_passengers(),
             mask_compression_ratio: self.mask.compression_ratio(),
             quantizer_gamma: self.quantizer.gamma(),
+        }
+    }
+    
+    /// Get per-layer telemetry
+    pub fn layer_telemetry(&self, layer_id: LayerId) -> Option<&LayerTelemetry> {
+        self.layer_telemetry.get(&layer_id)
+    }
+    
+    /// Get all layer telemetry
+    pub fn all_layer_telemetry(&self) -> &HashMap<LayerId, LayerTelemetry> {
+        &self.layer_telemetry
+    }
+    
+    /// Get summary telemetry across all layers
+    pub fn summary_telemetry(&self) -> SummaryTelemetry {
+        let mut total_original = 0u64;
+        let mut total_compressed = 0u64;
+        let mut total_compressions = 0u64;
+        let mut total_passenger_skips = 0u64;
+        let mut avg_prediction_error = 0.0f32;
+        let mut count = 0;
+        
+        for telemetry in self.layer_telemetry.values() {
+            total_original += telemetry.total_original_bytes;
+            total_compressed += telemetry.total_compressed_bytes;
+            total_compressions += telemetry.compression_count;
+            total_passenger_skips += telemetry.passenger_skip_count;
+            if telemetry.compression_count > 0 {
+                avg_prediction_error += telemetry.avg_prediction_error;
+                count += 1;
+            }
+        }
+        
+        let overall_ratio = if total_compressed > 0 {
+            total_original as f32 / total_compressed as f32
+        } else {
+            1.0
+        };
+        
+        let avg_error = if count > 0 {
+            avg_prediction_error / count as f32
+        } else {
+            0.0
+        };
+        
+        SummaryTelemetry {
+            total_original_bytes: total_original,
+            total_compressed_bytes: total_compressed,
+            overall_compression_ratio: overall_ratio,
+            total_compressions,
+            total_passenger_skips,
+            avg_prediction_error: avg_error,
+            num_layers_tracked: self.layer_telemetry.len(),
         }
     }
 
@@ -277,6 +449,18 @@ pub struct CompressionStats {
     pub num_passengers: usize,
     pub mask_compression_ratio: f32,
     pub quantizer_gamma: f32,
+}
+
+/// Summary telemetry across all layers
+#[derive(Debug, Clone)]
+pub struct SummaryTelemetry {
+    pub total_original_bytes: u64,
+    pub total_compressed_bytes: u64,
+    pub overall_compression_ratio: f32,
+    pub total_compressions: u64,
+    pub total_passenger_skips: u64,
+    pub avg_prediction_error: f32,
+    pub num_layers_tracked: usize,
 }
 
 #[cfg(test)]

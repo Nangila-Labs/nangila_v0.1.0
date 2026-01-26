@@ -139,6 +139,50 @@ impl TopologyMask {
         self.num_layers() as f32 / self.num_drivers.max(1) as f32
     }
 
+    /// Get layers in FSDP-optimal order: drivers first, then passengers
+    /// This ensures drivers are decompressed before passengers that depend on them
+    pub fn fsdp_ordered_layers(&self) -> Vec<LayerId> {
+        let mut drivers: Vec<LayerId> = self.drivers().collect();
+        let mut passengers: Vec<LayerId> = self.passengers().map(|(id, _, _)| id).collect();
+        
+        // Sort for deterministic ordering
+        drivers.sort();
+        passengers.sort();
+        
+        // Drivers first, then passengers
+        drivers.extend(passengers);
+        drivers
+    }
+
+    /// Get prefetch hints for optimal FSDP shard decompression
+    /// Returns (layer_id, prefetch_priority) where lower priority = decompress first
+    pub fn prefetch_hints(&self) -> Vec<(LayerId, u32)> {
+        let mut hints = Vec::new();
+        
+        // Drivers get priority 0 (decompress first)
+        for driver_id in self.drivers() {
+            hints.push((driver_id, 0));
+        }
+        
+        // Passengers get priority 1 (decompress after drivers)
+        for (passenger_id, _, _) in self.passengers() {
+            hints.push((passenger_id, 1));
+        }
+        
+        // Sort by priority then layer_id for determinism
+        hints.sort_by_key(|(id, priority)| (*priority, *id));
+        hints
+    }
+
+    /// Check if a layer's dependencies are satisfied (for FSDP ordering)
+    pub fn dependencies_ready(&self, layer_id: LayerId, ready_layers: &std::collections::HashSet<LayerId>) -> bool {
+        match self.layers.get(&layer_id) {
+            Some(LayerRole::Driver) => true,  // Drivers have no dependencies
+            Some(LayerRole::Passenger { source_id, .. }) => ready_layers.contains(source_id),
+            None => false,
+        }
+    }
+
     /// Promote a Passenger to Driver (when correlation drifts)
     pub fn promote_to_driver(&mut self, layer_id: LayerId) -> Result<()> {
         match self.layers.get(&layer_id) {
@@ -151,6 +195,88 @@ impl TopologyMask {
             Some(LayerRole::Driver) => Ok(()), // Already a Driver
             None => Err(NangilaError::LayerNotFound(layer_id)),
         }
+    }
+
+    /// Validate the topology mask:
+    /// 1. All source drivers referenced by passengers must exist
+    /// 2. No cycles in the passenger→driver dependency graph
+    /// 3. Passengers cannot depend on other passengers
+    pub fn validate(&self) -> Result<()> {
+        use std::collections::HashSet;
+
+        // Collect all driver layer IDs
+        let drivers: HashSet<LayerId> = self.drivers().collect();
+
+        // Check each passenger
+        for (passenger_id, role) in &self.layers {
+            if let LayerRole::Passenger { source_id, .. } = role {
+                // Check 1: Source driver must exist
+                if !drivers.contains(source_id) {
+                    // Check if source is another passenger (not allowed)
+                    if self.layers.contains_key(source_id) {
+                        return Err(NangilaError::InvalidFormat(format!(
+                            "Passenger {} depends on non-driver layer {}. \
+                             Passengers can only depend on drivers.",
+                            passenger_id, source_id
+                        )));
+                    } else {
+                        return Err(NangilaError::InvalidFormat(format!(
+                            "Passenger {} references non-existent driver {}",
+                            passenger_id, source_id
+                        )));
+                    }
+                }
+
+                // Check 2: Self-reference (trivial cycle)
+                if passenger_id == source_id {
+                    return Err(NangilaError::InvalidFormat(format!(
+                        "Passenger {} references itself as source",
+                        passenger_id
+                    )));
+                }
+            }
+        }
+
+        // Since passengers can only depend on drivers (validated above),
+        // and drivers have no dependencies, there cannot be cycles.
+        // The graph is a simple bipartite structure: drivers → passengers
+
+        Ok(())
+    }
+
+    /// Add a passenger with validation
+    pub fn add_passenger_checked(
+        &mut self,
+        layer_id: LayerId,
+        source_id: LayerId,
+        alpha: f32,
+        beta: f32,
+    ) -> Result<()> {
+        // Verify source is a driver
+        if !self.is_driver(source_id) {
+            if self.layers.contains_key(&source_id) {
+                return Err(NangilaError::InvalidFormat(format!(
+                    "Cannot add passenger {}: source {} is not a driver",
+                    layer_id, source_id
+                )));
+            } else {
+                return Err(NangilaError::InvalidFormat(format!(
+                    "Cannot add passenger {}: source driver {} does not exist",
+                    layer_id, source_id
+                )));
+            }
+        }
+
+        // Verify no self-reference
+        if layer_id == source_id {
+            return Err(NangilaError::InvalidFormat(format!(
+                "Passenger {} cannot reference itself",
+                layer_id
+            )));
+        }
+
+        self.add_passenger(layer_id, source_id, alpha, beta);
+        Ok(())
     }
 
     /// Save mask to binary file
@@ -261,5 +387,58 @@ mod tests {
         let loaded = TopologyMask::load(&mut buf.as_slice()).unwrap();
         assert_eq!(loaded.num_drivers(), 1);
         assert_eq!(loaded.num_passengers(), 1);
+    }
+
+    #[test]
+    fn test_validate_valid_mask() {
+        let mut mask = TopologyMask::new();
+        mask.add_driver(0);
+        mask.add_driver(1);
+        mask.add_passenger(2, 0, 0.9, 0.0);
+        mask.add_passenger(3, 1, 0.8, 0.1);
+
+        assert!(mask.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_missing_source_driver() {
+        let mut mask = TopologyMask::new();
+        mask.add_driver(0);
+        // Passenger references non-existent driver 99
+        mask.add_passenger(1, 99, 0.9, 0.0);
+
+        assert!(mask.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_passenger_to_passenger() {
+        let mut mask = TopologyMask::new();
+        mask.add_driver(0);
+        mask.add_passenger(1, 0, 0.9, 0.0);
+        // Passenger 2 tries to depend on passenger 1 (not allowed)
+        mask.add_passenger(2, 1, 0.8, 0.0);
+
+        let result = mask.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("non-driver"));
+    }
+
+    #[test]
+    fn test_add_passenger_checked() {
+        let mut mask = TopologyMask::new();
+        mask.add_driver(0);
+
+        // Valid: add passenger with existing driver
+        assert!(mask.add_passenger_checked(1, 0, 0.9, 0.0).is_ok());
+
+        // Invalid: non-existent driver
+        assert!(mask.add_passenger_checked(2, 99, 0.8, 0.0).is_err());
+
+        // Invalid: self-reference
+        assert!(mask.add_passenger_checked(3, 3, 0.7, 0.0).is_err());
+
+        // Invalid: passenger depending on passenger
+        assert!(mask.add_passenger_checked(4, 1, 0.6, 0.0).is_err());
     }
 }

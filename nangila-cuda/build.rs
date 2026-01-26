@@ -36,7 +36,7 @@ fn main() {
         .join("src")
         .join("kernels");
 
-    let cu_files = ["predict.cu", "reconstruct.cu", "gamma.cu"];
+    let cu_files = ["predict.cu", "reconstruct.cu", "gamma.cu", "crc32.cu"];
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     for cu_file in &cu_files {
@@ -49,8 +49,10 @@ fn main() {
         let obj_name = cu_file.replace(".cu", ".o");
         let obj_path = out_dir.join(&obj_name);
 
+        let nvcc_path = PathBuf::from(&cuda_path).join("bin").join("nvcc");
+        
         // Compile with nvcc
-        let status = std::process::Command::new("nvcc")
+        let status = std::process::Command::new(nvcc_path)
             .args(&[
                 "-c",
                 "-O3",

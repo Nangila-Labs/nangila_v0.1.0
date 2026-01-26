@@ -17,6 +17,10 @@ pub struct Reconstructor {
     quantizer: Quantizer,
     /// Cache of reconstructed Driver gradients (for Passenger synthesis)
     driver_cache: HashMap<LayerId, Tensor>,
+    /// Current step counter (for validation)
+    current_step: usize,
+    /// Last step when a driver was reconstructed (for staleness detection)
+    last_reconstruction_step: Option<usize>,
 }
 
 impl Reconstructor {
@@ -25,6 +29,8 @@ impl Reconstructor {
         Self {
             quantizer,
             driver_cache: HashMap::new(),
+            current_step: 0,
+            last_reconstruction_step: None,
         }
     }
 
@@ -46,9 +52,35 @@ impl Reconstructor {
         // Reconstruct: g = ĝ + r
         let gradient = prediction.add(&residual);
 
-        // Cache for Passenger synthesis
+        // Cache for Passenger synthesis with step marker
         self.driver_cache.insert(layer_id, gradient.clone());
+        self.last_reconstruction_step = Some(self.current_step);
 
+        Ok(gradient)
+    }
+
+    /// Reconstruct a partial Driver layer gradient
+    pub fn reconstruct_driver_partial(
+        &mut self,
+        layer_id: LayerId,
+        compressed: &CompressedTensor,
+        predictor: &Predictor,
+        start_index: usize,
+        end_index: usize,
+    ) -> Result<Tensor> {
+        // Get partial prediction
+        let prediction = predictor.predict_partial(layer_id, start_index, end_index)?;
+
+        // Dequantize partial residual
+        let residual = self
+            .quantizer
+            .dequantize_partial(compressed, start_index, end_index);
+
+        // Reconstruct: g = ĝ + r
+        let gradient = prediction.add(&residual);
+        
+        // Note: we don't cache partial reconstructions as they are usually transient for FSDP
+        
         Ok(gradient)
     }
 
@@ -64,10 +96,41 @@ impl Reconstructor {
                 alpha,
                 beta,
             } => {
+                // Validate driver exists in cache
                 let driver_grad = self
                     .driver_cache
                     .get(source_id)
-                    .ok_or(NangilaError::LayerNotFound(*source_id))?;
+                    .ok_or_else(|| {
+                        tracing::error!(
+                            "Passenger {} depends on driver {} which is not in cache. \
+                             This indicates driver was not reconstructed this step.",
+                            layer_id,
+                            source_id
+                        );
+                        NangilaError::LayerNotFound(*source_id)
+                    })?;
+
+                // Validate driver gradient is not stale
+                if let Some(last_step) = self.last_reconstruction_step {
+                    if last_step != self.current_step {
+                        tracing::warn!(
+                            "Passenger {} using driver {} from step {} (current: {}). \
+                             Driver cache may be stale!",
+                            layer_id,
+                            source_id,
+                            last_step,
+                            self.current_step
+                        );
+                    }
+                }
+
+                // Validate driver gradient size is reasonable
+                if driver_grad.numel() == 0 {
+                    return Err(NangilaError::InvalidFormat(format!(
+                        "Driver {} has zero elements, cannot synthesize passenger {}",
+                        source_id, layer_id
+                    )));
+                }
 
                 // g_passenger = α * g_driver + β
                 let mut passenger_grad = driver_grad.scale(*alpha);
@@ -118,6 +181,58 @@ impl Reconstructor {
     /// Clear the driver cache (call at end of step)
     pub fn clear_cache(&mut self) {
         self.driver_cache.clear();
+        self.current_step += 1;
+    }
+
+    /// Synthesize a partial Passenger layer gradient from its Driver
+    ///
+    /// For FSDP use cases where only a shard of the gradient is needed.
+    /// Requires the driver gradient to be cached (either full or covering the requested range).
+    ///
+    /// g_passenger[start:end] = α * g_driver[start:end] + β
+    pub fn synthesize_passenger_partial(
+        &self,
+        layer_id: LayerId,
+        mask: &TopologyMask,
+        start_index: usize,
+        end_index: usize,
+    ) -> Result<Tensor> {
+        let role = mask.get_role(layer_id)?;
+
+        match role {
+            LayerRole::Passenger {
+                source_id,
+                alpha,
+                beta,
+            } => {
+                let driver_grad = self
+                    .driver_cache
+                    .get(source_id)
+                    .ok_or(NangilaError::LayerNotFound(*source_id))?;
+
+                // Validate indices
+                let driver_len = driver_grad.numel();
+                if end_index > driver_len || start_index >= end_index {
+                    return Err(NangilaError::InvalidFormat(format!(
+                        "Invalid partial range: [{}, {}) for driver len {}",
+                        start_index, end_index, driver_len
+                    )));
+                }
+
+                // Slice driver gradient
+                let slice_len = end_index - start_index;
+                let driver_slice: Vec<f32> = driver_grad.data[start_index..end_index].to_vec();
+
+                // Scale and add bias: g_passenger = α * g_driver + β
+                let passenger_data: Vec<f32> = driver_slice
+                    .iter()
+                    .map(|&val| val * alpha + beta)
+                    .collect();
+
+                Ok(Tensor::new(passenger_data, vec![slice_len]))
+            }
+            LayerRole::Driver => Err(NangilaError::LayerNotFound(layer_id)),
+        }
     }
 
     /// Get a reference to the internal quantizer
@@ -159,7 +274,7 @@ mod tests {
         let residual = true_grad.sub(&prediction);
 
         // Compress residual
-        let compressed = quantizer.quantize(&residual);
+        let compressed = quantizer.quantize(&residual, 0, 0);
 
         // Reconstruct
         let mut reconstructor = Reconstructor::new(Quantizer::int4());
@@ -197,5 +312,56 @@ mod tests {
         assert!((passenger_grad.data[0] - 1.1).abs() < 0.01);
         assert!((passenger_grad.data[1] - 2.1).abs() < 0.01);
         assert!((passenger_grad.data[2] - 3.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_passenger_partial_synthesis() {
+        let quantizer = Quantizer::int4();
+        let mut reconstructor = Reconstructor::new(quantizer);
+
+        // Set up mask with Driver 0 and Passenger 1 (α=0.5, β=0.1)
+        let mut mask = TopologyMask::new();
+        mask.add_driver(0);
+        mask.add_passenger(1, 0, 0.5, 0.1);
+
+        // Manually add full Driver gradient to cache
+        reconstructor
+            .driver_cache
+            .insert(0, make_tensor(&[10.0, 20.0, 30.0, 40.0, 50.0]));
+
+        // Synthesize partial Passenger (indices 1..4)
+        let partial = reconstructor
+            .synthesize_passenger_partial(1, &mask, 1, 4)
+            .unwrap();
+
+        // Expected: 0.5 * [20, 30, 40] + 0.1 = [10.1, 15.1, 20.1]
+        assert_eq!(partial.numel(), 3);
+        assert!((partial.data[0] - 10.1).abs() < 0.01);
+        assert!((partial.data[1] - 15.1).abs() < 0.01);
+        assert!((partial.data[2] - 20.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_passenger_partial_bounds() {
+        let quantizer = Quantizer::int4();
+        let mut reconstructor = Reconstructor::new(quantizer);
+
+        let mut mask = TopologyMask::new();
+        mask.add_driver(0);
+        mask.add_passenger(1, 0, 0.5, 0.0);
+
+        reconstructor
+            .driver_cache
+            .insert(0, make_tensor(&[1.0, 2.0, 3.0]));
+
+        // Out of bounds
+        assert!(reconstructor
+            .synthesize_passenger_partial(1, &mask, 0, 10)
+            .is_err());
+
+        // Invalid range (start >= end)
+        assert!(reconstructor
+            .synthesize_passenger_partial(1, &mask, 2, 2)
+            .is_err());
     }
 }

@@ -25,10 +25,8 @@ def build_rust_lib():
     """Build the Rust nangila-hook static library if not already built."""
     lib_path = RUST_LIB_DIR / "libnangila.a"
     
-    # Skip if already built
-    if lib_path.exists():
-        print(f"Rust library already exists at {lib_path}")
-        return
+    # Always run cargo build to ensure features are correct
+    # Cargo handles incremental builds efficiently
     
     print("Building Rust nangila-hook library...")
     env = os.environ.copy()
@@ -48,11 +46,11 @@ def build_rust_lib():
     
     if cargo_cmd is None:
         print("WARNING: cargo not found, skipping Rust build")
-        print("Please build manually: cargo build --release -p nangila-hook")
+        print("Please build manually: cargo build --release -p nangila-hook --features cuda")
         return
     
     result = subprocess.run(
-        [cargo_cmd, "build", "--release", "-p", "nangila-hook"],
+        [cargo_cmd, "build", "--release", "-p", "nangila-hook", "--features", "cuda"],
         cwd=NANGILA_DIR,
         env=env,
         capture_output=True,

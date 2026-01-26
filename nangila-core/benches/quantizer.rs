@@ -17,11 +17,11 @@ fn bench_quantizer(c: &mut Criterion) {
 
         group.bench_function(format!("quantize_{}", size), |b| {
             let mut quantizer = Quantizer::int4();
-            b.iter(|| black_box(quantizer.quantize(&tensor)))
+            b.iter(|| black_box(quantizer.quantize(&tensor, 0, 0)))
         });
 
         let mut quantizer = Quantizer::int4();
-        let compressed = quantizer.quantize(&tensor);
+        let compressed = quantizer.quantize(&tensor, 0, 0);
 
         group.bench_function(format!("dequantize_{}", size), |b| {
             b.iter(|| black_box(quantizer.dequantize(&compressed)))
@@ -37,7 +37,7 @@ fn bench_compression_ratio(c: &mut Criterion) {
 
     c.bench_function("full_roundtrip_1M", |b| {
         b.iter(|| {
-            let compressed = quantizer.quantize(black_box(&tensor));
+            let compressed = quantizer.quantize(black_box(&tensor), 0, 0);
             black_box(quantizer.dequantize(&compressed))
         })
     });

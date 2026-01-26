@@ -6,9 +6,14 @@ compression with DistributedDataParallel (DDP) training.
 
 Usage:
     from nangila.ddp import register_nangila_hook
+    from nangila import SyncMode
     
     model = DDP(model, ...)
-    hook = register_nangila_hook(model, threshold=0.95)
+    hook = register_nangila_hook(
+        model, 
+        threshold=0.95,
+        sync_mode=SyncMode.PERIODIC  # Default: balanced error checking
+    )
     
     # Training loop as usual
     for batch in dataloader:
@@ -24,10 +29,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import Optional, Callable, Any
 
 try:
-    from .nangila import NangilaHook, NangilaConfig
+    from .nangila import NangilaHook, NangilaConfig, SyncMode
     NANGILA_AVAILABLE = True
 except ImportError:
     NANGILA_AVAILABLE = False
+    # Define stub for type hints
+    class SyncMode:
+        ASYNC = 0
+        ALWAYS = 1
+        PERIODIC = 2
 
 # Try to import native C++ hook (much faster than Python)
 try:
@@ -53,6 +63,13 @@ class NangilaDDPHook:
     
     This hook intercepts gradient synchronization in PyTorch DDP and
     applies Nangila's predictive compression to reduce bandwidth usage.
+    
+    Args:
+        process_group: PyTorch distributed process group (default: global)
+        threshold: Compression quality threshold (0.90-0.99)
+        warmup_steps: Steps before compression activates
+        num_layers: Estimated number of gradient layers
+        sync_mode: CUDA kernel synchronization mode (SyncMode.ASYNC, ALWAYS, or PERIODIC)
     """
     
     def __init__(
@@ -61,15 +78,10 @@ class NangilaDDPHook:
         threshold: float = 0.95,
         warmup_steps: int = 100,
         num_layers: int = 1000,
+        sync_mode: int = 2,  # SyncMode.PERIODIC
     ):
         """
         Initialize the Nangila DDP hook.
-        
-        Args:
-            process_group: PyTorch distributed process group (default: global)
-            threshold: Compression quality threshold (0.90-0.99)
-            warmup_steps: Steps before compression activates
-            num_layers: Estimated number of gradient layers
         """
         if not NANGILA_AVAILABLE:
             raise ImportError("Nangila is not available. Install with: pip install nangila")
@@ -78,6 +90,7 @@ class NangilaDDPHook:
         self.threshold = threshold
         self.warmup_steps = warmup_steps
         self.step_count = 0
+        self.sync_mode = sync_mode
         
         # Create Nangila hook
         self.config = NangilaConfig(
@@ -92,6 +105,13 @@ class NangilaDDPHook:
         # Track compression stats
         self.total_original_bytes = 0
         self.total_compressed_bytes = 0
+        
+        # Log sync mode
+        sync_mode_name = {0: "ASYNC", 1: "ALWAYS", 2: "PERIODIC"}.get(sync_mode, "UNKNOWN")
+        if dist.get_rank() == 0:
+            print(f"Nangila DDP Hook initialized with sync_mode={sync_mode_name}")
+            if sync_mode == 0:  # ASYNC
+                print("  WARNING: ASYNC mode has no error checking. Use PERIODIC or ALWAYS for debugging.")
     
     def __call__(self, state: Any, bucket: GradBucket) -> torch.futures.Future[torch.Tensor]:
         """
@@ -107,63 +127,146 @@ class NangilaDDPHook:
             # Get the gradient tensor
             tensor = bucket.buffer()
             
-            # Warmup check
+            # Warmup check (use standard all_reduce with AVG)
             if self.step_count < self.warmup_steps:
-                return dist.all_reduce(tensor, op=dist.ReduceOp.SUM, group=self.process_group, async_op=True).get_future()
+                return dist.all_reduce(tensor, op=dist.ReduceOp.AVG, group=self.process_group, async_op=True).get_future()
             
-            # === NANGILA COMPRESSION ===
+            # === NANGILA GPU-NATIVE COMPRESSION ===
             
-            # 1. Compress
-            tensor_np = tensor.detach().cpu().numpy()
-            self.total_original_bytes += tensor_np.nbytes
-            
-            compressed = self.hook.compress(layer_id, tensor_np)
-            self.total_compressed_bytes += len(compressed)
-            
-            # 2. Gather
-            world_size = dist.get_world_size(self.process_group) if self.process_group else dist.get_world_size()
-            gathered = [None for _ in range(world_size)]
-            
-            dist.all_gather_object(gathered, compressed, group=self.process_group)
-            
-            # 3. Decompress, Sum, Average
-            summed_grad = torch.zeros_like(tensor, dtype=torch.float32)
-            
-            for comp_bytes_np in gathered:
-                res_i_np = self.hook.decompress(layer_id, bytes(comp_bytes_np))
-                res_i = torch.from_numpy(res_i_np).to(tensor.device, dtype=torch.float32)
-                summed_grad += res_i
-            
-            summed_grad /= world_size
-            
-            # 4. Update tensor with Average
-            tensor.copy_(summed_grad.to(tensor.dtype))
-            
-            # 5. Update Predictor
-            self.hook.update(layer_id, summed_grad.cpu().numpy())
-            
-            # 6. Return valid future via Redundant All-Reduce
-            # We assume bandwidth is not the verify-blocker, but correctness is.
-            # We pre-divide by world_size so that all_reduce(SUM) restores the Average.
-            tensor.div_(world_size)
-            
-            return dist.all_reduce(tensor, op=dist.ReduceOp.SUM, group=self.process_group, async_op=True).get_future()
+            # Check if we can use GPU-native path
+            if tensor.is_cuda and hasattr(self.hook, 'compress_gpu'):
+                return self._compress_gpu_native(tensor, layer_id)
+            else:
+                # Fallback to CPU path (slow but works)
+                return self._compress_cpu_fallback(tensor, layer_id)
             
         except Exception as e:
             print(f"\nCRITICAL NANGILA DDP HOOK ERROR: {e}")
             import traceback
             traceback.print_exc()
-            # If we fail, we MUST return a valid future or DDP hangs/crashes worse.
-            # We'll return identity future (no-op) so training continues (broken but visible)
-            # or re-raise to crash.
-            # Crash is better for debugging.
             raise e
+    
+    def _compress_gpu_native(self, tensor: torch.Tensor, layer_id: int) -> torch.futures.Future[torch.Tensor]:
+        """GPU-native compression path - keeps data on GPU throughout"""
+        world_size = dist.get_world_size(self.process_group) if self.process_group else dist.get_world_size()
+        
+        # 1. Compress on GPU (returns GPU tensor)
+        # Pass sync_mode to CUDA kernel for error checking
+        compressed_gpu = self.hook.compress_gpu(layer_id, tensor, sync_mode=self.sync_mode)
+        self.total_original_bytes += tensor.numel() * 4
+        self.total_compressed_bytes += compressed_gpu.numel()
+        
+        # 2. Gather compressed sizes
+        local_size = torch.tensor([compressed_gpu.numel()], dtype=torch.long, device=tensor.device)
+        all_sizes = [torch.empty_like(local_size) for _ in range(world_size)]
+        dist.all_gather(all_sizes, local_size, group=self.process_group)
+        
+        max_size = max(s.item() for s in all_sizes)
+        
+        # 3. Pad and all-gather compressed data
+        if compressed_gpu.numel() < max_size:
+            padded = torch.zeros(max_size, dtype=torch.uint8, device=tensor.device)
+            padded[:compressed_gpu.numel()] = compressed_gpu
+            compressed_gpu = padded
+        
+        gathered_tensors = [torch.empty(max_size, dtype=torch.uint8, device=tensor.device) for _ in range(world_size)]
+        dist.all_gather(gathered_tensors, compressed_gpu, group=self.process_group)
+        
+        # 4. Decompress all ranks on GPU (batch operation)
+        decompressed_list = []
+        for i, comp_tensor in enumerate(gathered_tensors):
+            actual_size = all_sizes[i].item()
+            comp_slice = comp_tensor[:actual_size]
+            # Pass sync_mode to CUDA kernel for error checking
+            decompressed = self.hook.decompress_gpu(layer_id, comp_slice, tensor.numel(), sync_mode=self.sync_mode)
+            decompressed_list.append(decompressed)
+        
+        # 5. Stack and average on GPU
+        stacked = torch.stack(decompressed_list, dim=0)
+        averaged = stacked.mean(dim=0)
+        
+        # 6. Update tensor with averaged gradient
+        tensor.copy_(averaged)
+        
+        # 7. Update Predictor with averaged gradient (async, non-blocking)
+        # Pass sync_mode for consistency (though update is typically async)
+        self.hook.update_gpu(layer_id, averaged, sync_mode=self.sync_mode)
+        
+        # 8. Return completed future
+        future = torch.futures.Future()
+        future.set_result(tensor)
+        return future
+    
+    def _compress_cpu_fallback(self, tensor: torch.Tensor, layer_id: int) -> torch.futures.Future[torch.Tensor]:
+        """CPU fallback path (original implementation)"""
+        world_size = dist.get_world_size(self.process_group) if self.process_group else dist.get_world_size()
+        
+        # 1. Compress (single contiguous CPU transfer)
+        tensor_cpu = tensor.detach().cpu().contiguous()
+        tensor_np = tensor_cpu.numpy()
+        self.total_original_bytes += tensor_np.nbytes
+        
+        compressed = self.hook.compress(layer_id, tensor_np)
+        compressed_bytes = bytes(compressed)
+        self.total_compressed_bytes += len(compressed_bytes)
+        
+        # 2. Gather compressed data from all ranks
+        # First, gather sizes
+        local_size = torch.tensor([len(compressed_bytes)], dtype=torch.long, device=tensor.device)
+        all_sizes = [torch.empty_like(local_size) for _ in range(world_size)]
+        dist.all_gather(all_sizes, local_size, group=self.process_group)
+        
+        max_size = max(s.item() for s in all_sizes)
+        
+        # Pad local compressed data to max_size
+        padded_compressed = torch.zeros(max_size, dtype=torch.uint8, device=tensor.device)
+        local_tensor = torch.frombuffer(compressed_bytes, dtype=torch.uint8).to(tensor.device)
+        padded_compressed[:len(compressed_bytes)] = local_tensor
+        
+        # All-gather compressed tensors
+        gathered_tensors = [torch.empty(max_size, dtype=torch.uint8, device=tensor.device) for _ in range(world_size)]
+        dist.all_gather(gathered_tensors, padded_compressed, group=self.process_group)
+        
+        # 3. Decompress all ranks (batch CPU operations)
+        import numpy as np
+        decompressed_list = []
+        for i, comp_tensor in enumerate(gathered_tensors):
+            actual_size = all_sizes[i].item()
+            comp_bytes = bytes(comp_tensor[:actual_size].cpu().numpy())
+            res_np = self.hook.decompress(layer_id, comp_bytes)
+            decompressed_list.append(res_np)
+        
+        # 4. Stack and average on CPU
+        stacked = np.stack(decompressed_list, axis=0)
+        averaged = stacked.mean(axis=0).astype(np.float32)
+        
+        # 5. Single GPU transfer of averaged result
+        result_tensor = torch.from_numpy(averaged).to(
+            device=tensor.device,
+            dtype=tensor.dtype,
+            non_blocking=True
+        )
+        
+        # 6. Update tensor with averaged gradient
+        tensor.copy_(result_tensor, non_blocking=True)
+        
+        # 7. Update Predictor with averaged gradient
+        self.hook.update(layer_id, averaged)
+        
+        # 8. Return completed future
+        future = torch.futures.Future()
+        future.set_result(tensor)
+        return future
     
     def step(self):
         """Call after each optimizer step to update Nangila state."""
         self.step_count += 1
         self.layer_counter = 0  # Reset layer counter each step
         self.hook.step()
+        
+        # Auto predictor hash verification every 100 steps
+        if self.step_count % 100 == 0 and self.step_count > 0:
+            self._verify_predictor_hash()
     
     def get_stats(self) -> dict:
         """Get compression statistics."""
@@ -183,12 +286,42 @@ class NangilaDDPHook:
             return 1.0
         return self.total_original_bytes / self.total_compressed_bytes
 
+    def _verify_predictor_hash(self):
+        """Verify predictor hash across all ranks, trigger recovery on mismatch."""
+        try:
+            # Get local predictor hash
+            local_hash = self.hook.predictor_hash()
+            
+            # All-reduce to check if all ranks have same hash (XOR should be 0)
+            hash_tensor = torch.tensor([local_hash], dtype=torch.long, device='cpu')
+            
+            # Gather all hashes
+            world_size = dist.get_world_size(self.process_group)
+            all_hashes = [torch.zeros_like(hash_tensor) for _ in range(world_size)]
+            dist.all_gather(all_hashes, hash_tensor, group=self.process_group)
+            
+            # Check if all hashes match
+            first_hash = all_hashes[0].item()
+            all_match = all(h.item() == first_hash for h in all_hashes)
+            
+            if not all_match:
+                rank = dist.get_rank()
+                print(f"[Rank {rank}] PREDICTOR HASH MISMATCH at step {self.step_count}!")
+                print(f"[Rank {rank}] Hashes: {[h.item() for h in all_hashes]}")
+                # Trigger force sync on next compression
+                # The hook.verify_hash method handles recovery internally
+                self.hook.verify_hash(first_hash)  # Forces recovery mode
+        except Exception as e:
+            # Non-fatal - just log and continue
+            print(f"Hash verification failed: {e}")
+
 
 def register_nangila_hook(
     ddp_model: DDP,
     threshold: float = 0.95,
     warmup_steps: int = 100,
     prefer_cpp: bool = True,
+    sync_mode: int = 2,  # SyncMode.PERIODIC
 ) -> "NangilaDDPHook":
     """
     Register Nangila compression hook with a DDP model.
@@ -201,13 +334,27 @@ def register_nangila_hook(
         threshold: Compression quality threshold (0.90-0.99)
         warmup_steps: Steps before compression activates
         prefer_cpp: If True, use C++ hook when available (default: True)
+        sync_mode: CUDA kernel synchronization mode
+            - SyncMode.ASYNC (0): No sync, maximum performance (production)
+            - SyncMode.ALWAYS (1): Always sync, catch all errors (debug)
+            - SyncMode.PERIODIC (2): Sync every 100 calls (default, balanced)
     
     Returns:
         Hook instance (call .step() after each optimizer step)
     
     Example:
+        from nangila import SyncMode
+        
         model = DDP(model, device_ids=[local_rank])
-        hook = register_nangila_hook(model, threshold=0.95)
+        
+        # For production (maximum speed, minimal error checking)
+        hook = register_nangila_hook(model, sync_mode=SyncMode.ASYNC)
+        
+        # For debugging (catch all errors immediately)
+        hook = register_nangila_hook(model, sync_mode=SyncMode.ALWAYS)
+        
+        # Default (balanced)
+        hook = register_nangila_hook(model)  # Uses SyncMode.PERIODIC
         
         for batch in dataloader:
             loss = model(batch)
@@ -239,6 +386,7 @@ def register_nangila_hook(
         threshold=threshold,
         warmup_steps=warmup_steps,
         num_layers=num_layers,
+        sync_mode=sync_mode,
     )
     
     # Register as communication hook

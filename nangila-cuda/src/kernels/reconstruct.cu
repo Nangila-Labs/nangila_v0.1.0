@@ -131,12 +131,59 @@ extern "C" __global__ void dequantize_add_reconstruct_vec4_kernel(
 }
 
 /*
- * Host wrapper function
+ * Synchronization modes for error checking
  */
-extern "C" void launch_dequantize_add_reconstruct(
-    const uint8_t *packed, const float *g_current, const float *g_previous,
-    float momentum, float gamma, float *output, int N, cudaStream_t stream) {
-  if (N % 8 == 0 && N >= 256) {
+enum SyncMode { SYNC_ASYNC = 0, SYNC_ALWAYS = 1, SYNC_PERIODIC = 2 };
+
+/*
+ * Host wrapper function with comprehensive error checking
+ * Returns cudaError_t for error handling by caller
+ */
+extern "C" cudaError_t
+launch_dequantize_add_reconstruct(const uint8_t *packed, const float *g_current,
+                                  const float *g_previous, float momentum,
+                                  float gamma, float *output, int N,
+                                  cudaStream_t stream, int sync_mode) {
+
+  // ===== INPUT VALIDATION =====
+
+  // Null pointer checks
+  if (packed == nullptr || g_current == nullptr || g_previous == nullptr ||
+      output == nullptr) {
+    return cudaErrorInvalidValue;
+  }
+
+  // Sanity check on N
+  if (N <= 0) {
+    return cudaErrorInvalidValue;
+  }
+
+  if (N > 1000000000) { // 1B elements = 4GB
+    return cudaErrorInvalidValue;
+  }
+
+  // Validate gamma
+  if (gamma < 1e-8f || gamma > 1e6f || isnan(gamma) || isinf(gamma)) {
+    return cudaErrorInvalidValue;
+  }
+
+  // Validate momentum
+  if (momentum < 0.0f || momentum > 1.0f || isnan(momentum) ||
+      isinf(momentum)) {
+    return cudaErrorInvalidValue;
+  }
+
+  // ===== KERNEL LAUNCH =====
+
+  // Check alignment for vectorized path:
+  // float4 requires 16-byte alignment, packed requires 4-byte for uint32_t
+  bool aligned = (N % 8 == 0) && (N >= 256) && (((uintptr_t)packed % 4) == 0) &&
+                 (((uintptr_t)g_current % 16) == 0) &&
+                 (((uintptr_t)g_previous % 16) == 0) &&
+                 (((uintptr_t)output % 16) == 0);
+
+  if (aligned) {
+    // Vectorized path
     int N4 = N / 4;
     int threads = BLOCK_SIZE;
     int blocks = (N4 / 2 + threads - 1) / threads;
@@ -145,6 +192,7 @@ extern "C" void launch_dequantize_add_reconstruct(
         (const uint32_t *)packed, (const float4 *)g_current,
         (const float4 *)g_previous, momentum, gamma, (float4 *)output, N4);
   } else {
+    // Fallback to scalar kernel for unaligned or small tensors
     int threads = BLOCK_SIZE;
     int elements_per_thread = 2;
     int blocks = (N + threads * elements_per_thread - 1) /
@@ -153,4 +201,43 @@ extern "C" void launch_dequantize_add_reconstruct(
     dequantize_add_reconstruct_kernel<<<blocks, threads, 0, stream>>>(
         packed, g_current, g_previous, momentum, gamma, output, N);
   }
+
+  // ===== ERROR CHECKING =====
+
+  // Check for kernel launch errors
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    return err;
+  }
+
+  // Determine if we should synchronize
+  bool should_sync = false;
+
+  switch (sync_mode) {
+  case SYNC_ASYNC:
+    should_sync = false;
+    break;
+  case SYNC_ALWAYS:
+    should_sync = true;
+    break;
+  case SYNC_PERIODIC: {
+    // Race condition is acceptable for periodic error checking
+    static int call_count = 0;
+    call_count++;
+    should_sync = (call_count % 100 == 0);
+  } break;
+  default:
+    should_sync = false;
+    break;
+  }
+
+  // Synchronize if needed
+  if (should_sync) {
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+      return err;
+    }
+  }
+
+  return cudaSuccess;
 }
