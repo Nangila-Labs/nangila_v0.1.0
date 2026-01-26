@@ -15,9 +15,13 @@ use crate::hook::NangilaHook as RustHook;
 #[pyclass(name = "SyncMode")]
 #[derive(Clone, Copy, Debug)]
 pub struct PySyncMode {
+    #[cfg(feature = "cuda")]
     inner: nangila_cuda::SyncMode,
+    #[cfg(not(feature = "cuda"))]
+    mode: i32,
 }
 
+#[cfg(feature = "cuda")]
 #[pymethods]
 impl PySyncMode {
     /// Async: No synchronization, maximum performance (production)
@@ -52,6 +56,41 @@ impl PySyncMode {
             nangila_cuda::SyncMode::Async => "SyncMode.ASYNC".to_string(),
             nangila_cuda::SyncMode::Always => "SyncMode.ALWAYS".to_string(),
             nangila_cuda::SyncMode::Periodic => "SyncMode.PERIODIC".to_string(),
+        }
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+#[pymethods]
+impl PySyncMode {
+    /// Async: No synchronization, maximum performance (production)
+    #[classattr]
+    const ASYNC: i32 = 0;
+
+    /// Always: Always synchronize, catch all errors immediately (debug)
+    #[classattr]
+    const ALWAYS: i32 = 1;
+
+    /// Periodic: Synchronize every 100 calls, balanced approach (default)
+    #[classattr]
+    const PERIODIC: i32 = 2;
+
+    #[new]
+    fn new(mode: i32) -> PyResult<Self> {
+        if !(0..=2).contains(&mode) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Invalid sync mode. Use SyncMode.ASYNC (0), ALWAYS (1), or PERIODIC (2)",
+            ));
+        }
+        Ok(Self { mode })
+    }
+
+    fn __repr__(&self) -> String {
+        match self.mode {
+            0 => "SyncMode.ASYNC".to_string(),
+            1 => "SyncMode.ALWAYS".to_string(),
+            2 => "SyncMode.PERIODIC".to_string(),
+            _ => "SyncMode.UNKNOWN".to_string(),
         }
     }
 }
@@ -463,7 +502,14 @@ impl PyNangilaHook {
 /// Check if CUDA is available
 #[pyfunction]
 fn cuda_available() -> bool {
-    nangila_cuda::cuda_available()
+    #[cfg(feature = "cuda")]
+    {
+        nangila_cuda::cuda_available()
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        false
+    }
 }
 
 /// Raw CUDA launch: predict_and_quantize
