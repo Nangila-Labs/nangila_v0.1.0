@@ -8,23 +8,11 @@ fn main() {
         println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=cusparse");
 
-        // Handle SURF nvhpc module paths (e.g. /opt/nvidia/hpc_sdk/Linux_x86_64/25.7/math_libs/12.9/lib64)
-        if let Ok(cxx) = env::var("CXX") {
-            if cxx.contains("hpc_sdk") {
-                // cxx is typically: /opt/nvidia/hpc_sdk/Linux_x86_64/25.7/compilers/bin/nvc++
-                let parts: Vec<&str> = cxx.split("/compilers/").collect();
-                if parts.len() == 2 {
-                    let base_path = parts[0];
-                    // Link math libs (cusparse)
-                    println!("cargo:rustc-link-search=native={base_path}/math_libs/12.9/lib64");
-                    println!("cargo:rustc-link-search=native={base_path}/math_libs/12.4/lib64");
-                    println!("cargo:rustc-link-search=native={base_path}/math_libs/12.3/lib64");
-                    // Link cuda toolkit libs (cudart)
-                    println!("cargo:rustc-link-search=native={base_path}/cuda/12.9/lib64");
-                    println!("cargo:rustc-link-search=native={base_path}/cuda/12.4/lib64");
-                    println!("cargo:rustc-link-search=native={base_path}/cuda/12.3/lib64");
-                }
-            }
+        // Handle SURF nvhpc module paths dynamically since CXX=g++ overrides the original path
+        let surf_base = "/opt/nvidia/hpc_sdk/Linux_x86_64/25.7";
+        if std::path::Path::new(surf_base).exists() {
+            println!("cargo:rustc-link-search=native={surf_base}/math_libs/12.9/lib64");
+            println!("cargo:rustc-link-search=native={surf_base}/cuda/12.9/lib64");
         }
 
         cc::Build::new()
