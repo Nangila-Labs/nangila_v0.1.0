@@ -11,8 +11,6 @@
 //!
 //! Phase 2, Sprint 5 deliverable.
 
-
-
 // ─── Predictor Trait ───────────────────────────────────────────────
 
 /// Trait for all predictor implementations.
@@ -209,10 +207,10 @@ pub struct NodeAccuracyStats {
     pub net_id: u64,
     pub predictor_name: String,
     pub total_predictions: u64,
-    pub hits: u64,           // within tolerance
-    pub misses: u64,         // outside tolerance
-    pub total_error: f64,    // cumulative absolute error
-    pub max_error: f64,      // worst-case error
+    pub hits: u64,               // within tolerance
+    pub misses: u64,             // outside tolerance
+    pub total_error: f64,        // cumulative absolute error
+    pub max_error: f64,          // worst-case error
     pub error_history: Vec<f64>, // recent errors for trend analysis
 }
 
@@ -280,10 +278,8 @@ impl NodeAccuracyStats {
             return 0.0;
         }
         let half = n / 2;
-        let recent_avg: f64 =
-            self.error_history[half..].iter().sum::<f64>() / (n - half) as f64;
-        let older_avg: f64 =
-            self.error_history[..half].iter().sum::<f64>() / half as f64;
+        let recent_avg: f64 = self.error_history[half..].iter().sum::<f64>() / (n - half) as f64;
+        let older_avg: f64 = self.error_history[..half].iter().sum::<f64>() / half as f64;
         recent_avg - older_avg
     }
 }
@@ -414,9 +410,7 @@ pub fn classify_signal(state: &SignalState) -> SignalClass {
 
     if second_derivs.len() >= 2 {
         // Check if second derivative has consistent sign (monotonic curvature)
-        let consistent_sign = second_derivs
-            .windows(2)
-            .all(|w| w[0] * w[1] >= 0.0);
+        let consistent_sign = second_derivs.windows(2).all(|w| w[0] * w[1] >= 0.0);
 
         // And gradients are decaying in magnitude
         let avg_gradient_early: f64 = gradients[..gradients.len() / 2]
@@ -491,9 +485,7 @@ impl PredictorSelector {
                 };
                 (exp.predict(state, target_time), "Exponential")
             }
-            SignalClass::Stiff => {
-                (self.rk.predict(state, target_time), "RungeKutta")
-            }
+            SignalClass::Stiff => (self.rk.predict(state, target_time), "RungeKutta"),
         }
     }
 }
@@ -650,7 +642,7 @@ mod tests {
         let rk = RungeKuttaPredictor;
         let predicted = rk.predict(&state, 8e-12);
         let expected = (8e-12_f64).powi(2) * 1e24; // = 64
-        // RK should be closer to truth than linear would be
+                                                   // RK should be closer to truth than linear would be
         let lin = LinearPredictor;
         let linear_pred = lin.predict(&state, 8e-12);
 

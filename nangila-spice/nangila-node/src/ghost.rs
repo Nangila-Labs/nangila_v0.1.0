@@ -10,7 +10,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
 use crate::predictor::{
     AdaptiveConfidence, PredictionAccuracyLogger, PredictorSelector, SignalState,
 };
@@ -292,14 +291,8 @@ mod tests {
         buf.add_ghost(GhostNode::new(200, 0));
 
         // Apply some corrections
-        buf.apply_corrections(
-            &[(100, 1.0, 1e-12), (200, 0.5, 1e-12)],
-            1e-3,
-        );
-        buf.apply_corrections(
-            &[(100, 1.001, 2e-12), (200, 0.6, 2e-12)],
-            1e-3,
-        );
+        buf.apply_corrections(&[(100, 1.0, 1e-12), (200, 0.5, 1e-12)], 1e-3);
+        buf.apply_corrections(&[(100, 1.001, 2e-12), (200, 0.6, 2e-12)], 1e-3);
 
         assert_eq!(buf.accuracy_logger.node_stats.len(), 2);
         assert!(

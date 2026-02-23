@@ -100,7 +100,10 @@ impl DeviceModel for DiodeModel {
         let current = self.is * (exp_val - 1.0);
         let conductance = self.is * exp_val / v_thermal;
 
-        DeviceEval { current, conductance }
+        DeviceEval {
+            current,
+            conductance,
+        }
     }
 
     fn stamp(&self, vp: f64, vn: f64) -> DeviceStamp {
@@ -158,9 +161,9 @@ impl MosfetLevel1 {
     /// Standard NMOS with typical 180nm process parameters.
     pub fn nmos_180nm(node_g: usize, node_d: usize, node_s: usize) -> Self {
         Self {
-            vth: 0.5,      // 500mV threshold
-            beta: 1e-3,    // 1mA/V² (W/L=10, μnCox=100μA/V²)
-            lambda: 0.1,   // 0.1/V channel-length modulation
+            vth: 0.5,    // 500mV threshold
+            beta: 1e-3,  // 1mA/V² (W/L=10, μnCox=100μA/V²)
+            lambda: 0.1, // 0.1/V channel-length modulation
             node_g,
             node_d,
             node_s,
@@ -198,13 +201,19 @@ impl MosfetLevel1 {
     pub fn mna_stamp(&self, voltages: &[f64]) -> (f64, f64, f64) {
         let vg = if self.node_g > 0 && self.node_g <= voltages.len() {
             voltages[self.node_g - 1]
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let vd = if self.node_d > 0 && self.node_d <= voltages.len() {
             voltages[self.node_d - 1]
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let vs = if self.node_s > 0 && self.node_s <= voltages.len() {
             voltages[self.node_s - 1]
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         let vgs = vg - vs;
         let vds = vd - vs;
@@ -219,9 +228,21 @@ impl MosfetLevel1 {
 
     /// Get the current operating region.
     pub fn region(&self, voltages: &[f64]) -> MosfetRegion {
-        let vg = if self.node_g > 0 { voltages.get(self.node_g - 1).copied().unwrap_or(0.0) } else { 0.0 };
-        let vd = if self.node_d > 0 { voltages.get(self.node_d - 1).copied().unwrap_or(0.0) } else { 0.0 };
-        let vs = if self.node_s > 0 { voltages.get(self.node_s - 1).copied().unwrap_or(0.0) } else { 0.0 };
+        let vg = if self.node_g > 0 {
+            voltages.get(self.node_g - 1).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let vd = if self.node_d > 0 {
+            voltages.get(self.node_d - 1).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let vs = if self.node_s > 0 {
+            voltages.get(self.node_s - 1).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
 
         let (_, _, _, region) = self.evaluate(vg - vs, vd - vs);
         region
@@ -288,7 +309,10 @@ mod tests {
         let eval = diode.eval(-1.0, 0.0); // Reverse biased
 
         // Should approach -Is (saturation current)
-        assert!(eval.current < 0.0, "Reverse bias: current should be negative");
+        assert!(
+            eval.current < 0.0,
+            "Reverse bias: current should be negative"
+        );
         assert!(
             eval.current.abs() < diode.is * 2.0,
             "Reverse current bounded by Is"
@@ -345,10 +369,7 @@ mod tests {
         let (id1, _, _, _) = fet.evaluate(1.0, 1.5);
         let (id2, _, _, _) = fet.evaluate(1.0, 3.0);
 
-        assert!(
-            id2 > id1,
-            "CLM: Id should increase with Vds in saturation"
-        );
+        assert!(id2 > id1, "CLM: Id should increase with Vds in saturation");
     }
 
     #[test]
@@ -362,7 +383,8 @@ mod tests {
         let eval = r.eval(1.0, 0.0);
         assert!(
             (eval.current - 1e-3).abs() < 1e-10,
-            "1V / 1kΩ = 1mA, got {:.4e}", eval.current
+            "1V / 1kΩ = 1mA, got {:.4e}",
+            eval.current
         );
         assert!(
             (eval.conductance - 1e-3).abs() < 1e-10,

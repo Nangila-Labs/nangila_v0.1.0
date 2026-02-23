@@ -318,10 +318,7 @@ mod tests {
         assert!(mna.solve(), "Solve should succeed");
 
         let v2 = mna.node_voltage(2);
-        assert!(
-            (v2 - 5.0).abs() < 1e-6,
-            "V(2) should be 5.0V, got {v2}"
-        );
+        assert!((v2 - 5.0).abs() < 1e-6, "V(2) should be 5.0V, got {v2}");
     }
 
     #[test]

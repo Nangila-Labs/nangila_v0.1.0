@@ -65,10 +65,7 @@ impl SolverEngine {
         };
 
         let mna = if backend == SolverBackend::BuiltIn {
-            Some(MnaSystem::new(
-                netlist.num_nodes,
-                netlist.elements.clone(),
-            ))
+            Some(MnaSystem::new(netlist.num_nodes, netlist.elements.clone()))
         } else {
             None
         };
@@ -83,10 +80,7 @@ impl SolverEngine {
     /// Force a specific backend (for testing).
     pub fn with_backend(netlist: PartitionNetlist, backend: SolverBackend) -> Self {
         let mna = if backend == SolverBackend::BuiltIn {
-            Some(MnaSystem::new(
-                netlist.num_nodes,
-                netlist.elements.clone(),
-            ))
+            Some(MnaSystem::new(netlist.num_nodes, netlist.elements.clone()))
         } else {
             None
         };
@@ -139,11 +133,8 @@ impl SolverEngine {
         let mut elements = self.netlist.elements.clone();
         for (net_id, voltage) in ghost_voltages {
             // Find the local node for this ghost
-            if let Some((_gid, local_node)) = self
-                .netlist
-                .ghost_map
-                .iter()
-                .find(|(gid, _)| gid == net_id)
+            if let Some((_gid, local_node)) =
+                self.netlist.ghost_map.iter().find(|(gid, _)| gid == net_id)
             {
                 // Add/update ghost source
                 elements.push(Element::GhostSource {

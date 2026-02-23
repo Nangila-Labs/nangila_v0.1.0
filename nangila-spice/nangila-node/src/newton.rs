@@ -14,8 +14,8 @@
 
 use tracing::{debug, warn};
 
-use crate::gpu_solver::{GpuSolver, SparseMatrix};
 use crate::device_model::{DeviceEval, DeviceModel, DeviceStamp};
+use crate::gpu_solver::{GpuSolver, SparseMatrix};
 
 // ─── Convergence Config ────────────────────────────────────────────
 
@@ -39,9 +39,9 @@ impl Default for NrConfig {
         Self {
             max_iter: 150,
             reltol: 1e-3,
-            abstol: 1e-6,   // 1μV
+            abstol: 1e-6,    // 1μV
             abstol_i: 1e-12, // 1pA
-            damping: 1.0,   // No damping by default
+            damping: 1.0,    // No damping by default
         }
     }
 }
@@ -153,11 +153,7 @@ impl NewtonSolver {
     ///   (sparse_matrix_with_stamps, rhs_with_device_currents)
     ///
     /// Returns the converged state, or the last iterate if no convergence.
-    pub fn solve_timestep<F>(
-        &mut self,
-        mut state: NrState,
-        mut build_system: F,
-    ) -> NrState
+    pub fn solve_timestep<F>(&mut self, mut state: NrState, mut build_system: F) -> NrState
     where
         F: FnMut(&[f64]) -> SparseMatrix,
     {
@@ -189,8 +185,8 @@ impl NewtonSolver {
                 let mut max_err = 0.0f64;
                 for (&v_new, &v_old) in new_v.iter().zip(&prev) {
                     let delta = (v_new - v_old).abs();
-                    let tol = self.config.reltol * v_new.abs().max(v_old.abs())
-                        + self.config.abstol;
+                    let tol =
+                        self.config.reltol * v_new.abs().max(v_old.abs()) + self.config.abstol;
                     max_err = max_err.max(delta / tol.max(self.config.abstol));
                 }
                 state.final_error = max_err;
@@ -265,7 +261,8 @@ mod tests {
         );
         assert!(
             (final_state.voltages[0] - 5.0).abs() < 1e-3,
-            "V should be ~5V, got {:.4}", final_state.voltages[0]
+            "V should be ~5V, got {:.4}",
+            final_state.voltages[0]
         );
     }
 

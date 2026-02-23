@@ -143,10 +143,7 @@ fn run_demo(args: Args) {
     }
     info!("Steps: {}", stats.total_steps);
     info!("Wall time: {:.3}s", stats.wall_time_secs);
-    info!(
-        "Prediction hit rate: {:.1}%",
-        stats.hit_rate() * 100.0
-    );
+    info!("Prediction hit rate: {:.1}%", stats.hit_rate() * 100.0);
     info!("Rollbacks: {}", stats.rollbacks);
     info!("Waveform points: {}", solver.waveform.len());
 
@@ -154,7 +151,13 @@ fn run_demo(args: Args) {
     let wf = &solver.waveform;
     if wf.len() >= 5 {
         info!("=== Waveform Samples (V_cap) ===");
-        let indices = [0, wf.len() / 4, wf.len() / 2, 3 * wf.len() / 4, wf.len() - 1];
+        let indices = [
+            0,
+            wf.len() / 4,
+            wf.len() / 2,
+            3 * wf.len() / 4,
+            wf.len() - 1,
+        ];
         for &i in &indices {
             let (t, ref v) = wf[i];
             info!("  t={:.2e}s  V(cap)={:.6}V", t, v[1]);

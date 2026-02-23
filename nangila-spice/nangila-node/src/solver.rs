@@ -142,7 +142,9 @@ impl TransientSolver {
                     .map(|&(net_id, v)| (net_id, v, msg.time))
                     .collect();
 
-                let all_ok = self.ghosts.apply_corrections(&corrections, self.config.reltol);
+                let all_ok = self
+                    .ghosts
+                    .apply_corrections(&corrections, self.config.reltol);
                 if all_ok {
                     self.stats.prediction_hits += corrections.len() as u64;
                 } else {
@@ -152,10 +154,7 @@ impl TransientSolver {
 
             // 2. Check for rollback requests
             if let Some(rollback) = self.comm.poll_rollback() {
-                warn!(
-                    "Rollback requested to t={:.2e}s",
-                    rollback.rollback_to_time
-                );
+                warn!("Rollback requested to t={:.2e}s", rollback.rollback_to_time);
                 if let Some(restored) = self.rollback_to(rollback.rollback_to_time) {
                     state = restored;
                     self.stats.rollbacks += 1;
@@ -294,10 +293,7 @@ mod tests {
 
         // Verify simulation ran
         assert!(stats.total_steps > 0, "Should have completed steps");
-        assert!(
-            !solver.waveform.is_empty(),
-            "Should have recorded waveform"
-        );
+        assert!(!solver.waveform.is_empty(), "Should have recorded waveform");
 
         // After 100ps with RC=10ps (10 tau), cap should be near 1.8V
         let last_v2 = solver.waveform.last().map(|(_, v)| v[1]).unwrap_or(0.0);
@@ -346,12 +342,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut solver = TransientSolver::new(
-            netlist,
-            GhostBuffer::new(),
-            CommLayer::new(0, 1),
-            config,
-        );
+        let mut solver =
+            TransientSolver::new(netlist, GhostBuffer::new(), CommLayer::new(0, 1), config);
         let (_state, stats) = solver.run();
 
         assert_eq!(stats.total_steps, 10, "Should have 10 steps");

@@ -9,11 +9,11 @@
 use std::time::Instant;
 use tracing::info;
 
-use crate::mna::Element;
-use crate::solver::{SimConfig, SimStats, TransientSolver};
-use crate::ghost::GhostBuffer;
 use crate::comm::CommLayer;
+use crate::ghost::GhostBuffer;
+use crate::mna::Element;
 use crate::ngspice_ffi::PartitionNetlist;
+use crate::solver::{SimConfig, SimStats, TransientSolver};
 
 // ─── Circuit Generators ────────────────────────────────────────────
 
@@ -184,11 +184,25 @@ fn count_nodes(elements: &[Element]) -> usize {
     let mut nodes = std::collections::HashSet::new();
     for e in elements {
         match e {
-            Element::Resistor { a, b, .. } => { nodes.insert(*a); nodes.insert(*b); }
-            Element::Capacitor { a, b, .. } => { nodes.insert(*a); nodes.insert(*b); }
-            Element::VoltageSource { pos, neg, .. } => { nodes.insert(*pos); nodes.insert(*neg); }
-            Element::CurrentSource { pos, neg, .. } => { nodes.insert(*pos); nodes.insert(*neg); }
-            Element::GhostSource { node, .. } => { nodes.insert(*node); }
+            Element::Resistor { a, b, .. } => {
+                nodes.insert(*a);
+                nodes.insert(*b);
+            }
+            Element::Capacitor { a, b, .. } => {
+                nodes.insert(*a);
+                nodes.insert(*b);
+            }
+            Element::VoltageSource { pos, neg, .. } => {
+                nodes.insert(*pos);
+                nodes.insert(*neg);
+            }
+            Element::CurrentSource { pos, neg, .. } => {
+                nodes.insert(*pos);
+                nodes.insert(*neg);
+            }
+            Element::GhostSource { node, .. } => {
+                nodes.insert(*node);
+            }
         }
     }
     nodes.remove(&0); // remove ground
@@ -305,7 +319,11 @@ mod tests {
     fn test_rc_ladder_generation() {
         let elements = generate_rc_ladder(10, 1e3, 1e-12);
         // 1 vsource + 10*(R+C) = 21
-        assert_eq!(elements.len(), 21, "10-stage RC ladder should have 21 elements");
+        assert_eq!(
+            elements.len(),
+            21,
+            "10-stage RC ladder should have 21 elements"
+        );
     }
 
     #[test]
@@ -325,11 +343,7 @@ mod tests {
             max_history: 100,
         };
 
-        let result = run_benchmark(
-            "Test RC",
-            generate_rc_ladder(5, 1e3, 1e-12),
-            config,
-        );
+        let result = run_benchmark("Test RC", generate_rc_ladder(5, 1e3, 1e-12), config);
 
         assert!(result.timesteps > 0, "Should simulate some steps");
         assert!(result.wall_time_secs > 0.0, "Should take some time");
@@ -346,11 +360,7 @@ mod tests {
             max_history: 100,
         };
 
-        let result = run_benchmark(
-            "Test CiM",
-            generate_cim_array(3, 3),
-            config,
-        );
+        let result = run_benchmark("Test CiM", generate_cim_array(3, 3), config);
 
         assert!(result.timesteps > 0);
         assert!(result.element_count > 0);

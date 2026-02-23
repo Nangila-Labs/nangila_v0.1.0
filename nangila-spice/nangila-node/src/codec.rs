@@ -272,9 +272,9 @@ mod tests {
             to_partition: 1,
             time: 1e-9,
             updates: vec![
-                (100, 1.8),       // delta = 0, should skip
+                (100, 1.8),        // delta = 0, should skip
                 (200, 0.9 + 1e-7), // delta = 1e-7 < 1e-6, should skip
-                (300, 1.5),       // delta = 0.3, should keep
+                (300, 1.5),        // delta = 0.3, should keep
             ],
         };
         let predicted = vec![(100, 1.8), (200, 0.9), (300, 1.2)];

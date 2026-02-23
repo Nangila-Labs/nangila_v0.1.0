@@ -103,6 +103,23 @@ impl SparseMatrix {
 
 // ─── Solver Backend ────────────────────────────────────────────────
 
+#[cfg(feature = "cuda")]
+pub mod cuda_ffi {
+    use std::os::raw::{c_double, c_int, c_void};
+    extern "C" {
+        pub fn cusparse_init_solver() -> *mut c_void;
+        pub fn cusparse_load_matrix(
+            ctx: *mut c_void,
+            n: c_int,
+            nnz: c_int,
+            csr_row_ptr: *const c_int,
+            csr_col_ind: *const c_int,
+            csr_val: *const c_double,
+        );
+        pub fn cusparse_spmv(ctx: *mut c_void, x: *const c_double, y: *mut c_double);
+        pub fn cusparse_free_solver(ctx: *mut c_void);
+    }
+}
 /// Available solver backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolverBackend {
@@ -175,9 +192,14 @@ impl GpuSolver {
         let ok = match self.backend {
             SolverBackend::Cpu => self.solve_cpu(mat),
             SolverBackend::Gpu => {
-                // GPU path: would call cuSPARSE here
-                // Falls back to CPU for now
-                self.solve_cpu(mat)
+                #[cfg(feature = "cuda")]
+                {
+                    self.solve_gpu_spmv(mat)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    self.solve_cpu(mat)
+                }
             }
         };
 
@@ -254,6 +276,41 @@ impl GpuSolver {
         true
     }
 
+    /// GPU Delta Solver path: performs cuSPARSE Matrix-Vector Multiply (SpMV).
+    #[cfg(feature = "cuda")]
+    fn solve_gpu_spmv(&mut self, mat: &mut SparseMatrix) -> bool {
+        self.stats.factorizations += 1;
+        if mat.n == 0 {
+            return true;
+        }
+
+        unsafe {
+            let ctx = cuda_ffi::cusparse_init_solver();
+            if ctx.is_null() {
+                return false;
+            }
+
+            cuda_ffi::cusparse_load_matrix(
+                ctx,
+                mat.n as std::os::raw::c_int,
+                mat.values.len() as std::os::raw::c_int,
+                mat.row_ptr.as_ptr() as *const std::os::raw::c_int,
+                mat.col_indices.as_ptr() as *const std::os::raw::c_int,
+                mat.values.as_ptr() as *const std::os::raw::c_double,
+            );
+
+            mat.solution = vec![0.0; mat.n];
+            cuda_ffi::cusparse_spmv(
+                ctx,
+                mat.rhs.as_ptr() as *const std::os::raw::c_double,
+                mat.solution.as_mut_ptr() as *mut std::os::raw::c_double,
+            );
+
+            cuda_ffi::cusparse_free_solver(ctx);
+        }
+        true
+    }
+
     /// Compute the residual norm ‖Ax - b‖₂ for verification.
     pub fn residual_norm(&self, mat: &SparseMatrix) -> f64 {
         let mut res = 0.0f64;
@@ -295,11 +352,7 @@ mod tests {
 
     #[test]
     fn test_sparse_matrix_from_dense() {
-        let dense = vec![
-            1.0, 0.0, 0.0,
-            0.0, 2.0, 0.0,
-            0.0, 0.0, 3.0,
-        ];
+        let dense = vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
         let mat = SparseMatrix::from_dense(&dense, 3, 1e-30);
 
         assert_eq!(mat.nnz(), 3, "Diagonal matrix has 3 non-zeros");
@@ -308,18 +361,16 @@ mod tests {
 
     #[test]
     fn test_sparse_to_dense_roundtrip() {
-        let dense = vec![
-            2.0, -1.0, 0.0,
-            -1.0, 2.0, -1.0,
-            0.0, -1.0, 2.0,
-        ];
+        let dense = vec![2.0, -1.0, 0.0, -1.0, 2.0, -1.0, 0.0, -1.0, 2.0];
         let mat = SparseMatrix::from_dense(&dense, 3, 1e-30);
         let back = mat.to_dense();
 
         for i in 0..9 {
             assert!(
                 (back[i] - dense[i]).abs() < 1e-12,
-                "Roundtrip mismatch at {i}: {} vs {}", back[i], dense[i]
+                "Roundtrip mismatch at {i}: {} vs {}",
+                back[i],
+                dense[i]
             );
         }
     }
@@ -337,7 +388,8 @@ mod tests {
         assert!(ok, "Solve should succeed");
         assert!(
             (mat.solution[0] - 3.0).abs() < 1e-10,
-            "x should be 3.0, got {}", mat.solution[0]
+            "x should be 3.0, got {}",
+            mat.solution[0]
         );
     }
 
@@ -377,10 +429,7 @@ mod tests {
         assert!(solver.solve(&mut mat), "Solve should succeed");
 
         let v2 = mat.solution[1];
-        assert!(
-            (v2 - 5.0).abs() < 1e-4,
-            "V(2) should be 5V, got {v2:.6}"
-        );
+        assert!((v2 - 5.0).abs() < 1e-4, "V(2) should be 5V, got {v2:.6}");
     }
 
     #[test]
@@ -392,7 +441,9 @@ mod tests {
         let expected_sparsity = 1.0 - 28.0 / 100.0;
         assert!(
             (sparsity - expected_sparsity).abs() < 0.01,
-            "Sparsity should be ~{:.2}, got {:.2}", expected_sparsity, sparsity
+            "Sparsity should be ~{:.2}, got {:.2}",
+            expected_sparsity,
+            sparsity
         );
     }
 
@@ -407,10 +458,7 @@ mod tests {
         solver.solve(&mut mat);
 
         let r = solver.residual_norm(&mat);
-        assert!(
-            r < 1e-10,
-            "Residual norm should be near 0, got {r:.2e}"
-        );
+        assert!(r < 1e-10, "Residual norm should be near 0, got {r:.2e}");
     }
 
     #[test]
@@ -441,5 +489,24 @@ mod tests {
         // Check residual
         let r = solver.residual_norm(&mat);
         assert!(r < 1e-10, "Residual should be near 0, got {r:.2e}");
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_cusparse_spmv_gpu() {
+        // Test SpMV on GPU:
+        // A = [2  0]
+        //     [0  3]
+        // rhs = [4, 5]
+        // A * rhs = [8, 15]
+        let dense = vec![2.0, 0.0, 0.0, 3.0];
+        let mut mat = SparseMatrix::from_dense(&dense, 2, 1e-30);
+        mat.rhs = vec![4.0, 5.0];
+
+        let mut solver = GpuSolver::with_backend(SolverBackend::Gpu);
+        assert!(solver.solve(&mut mat), "GPU SpMV should succeed");
+
+        assert!((mat.solution[0] - 8.0).abs() < 1e-10);
+        assert!((mat.solution[1] - 15.0).abs() < 1e-10);
     }
 }

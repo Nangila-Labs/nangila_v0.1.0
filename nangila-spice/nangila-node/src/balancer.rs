@@ -61,7 +61,8 @@ impl PartitionMetrics {
         if self.ewma_solve_time == 0.0 {
             self.ewma_solve_time = time_secs;
         } else {
-            self.ewma_solve_time = self.alpha * time_secs + (1.0 - self.alpha) * self.ewma_solve_time;
+            self.ewma_solve_time =
+                self.alpha * time_secs + (1.0 - self.alpha) * self.ewma_solve_time;
         }
 
         self.steps_completed += 1;
@@ -78,9 +79,12 @@ impl PartitionMetrics {
             return 0.0;
         }
         let mean = self.solve_times.iter().sum::<f64>() / self.solve_times.len() as f64;
-        let variance = self.solve_times.iter()
+        let variance = self
+            .solve_times
+            .iter()
             .map(|t| (t - mean).powi(2))
-            .sum::<f64>() / (self.solve_times.len() - 1) as f64;
+            .sum::<f64>()
+            / (self.solve_times.len() - 1) as f64;
         variance
     }
 
@@ -149,9 +153,8 @@ impl StragglerDetector {
 
         let solve_times: Vec<f64> = metrics.iter().map(|m| m.avg_solve_time()).collect();
         let mean = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
-        let variance = solve_times.iter()
-            .map(|t| (t - mean).powi(2))
-            .sum::<f64>() / solve_times.len() as f64;
+        let variance =
+            solve_times.iter().map(|t| (t - mean).powi(2)).sum::<f64>() / solve_times.len() as f64;
         let stddev = variance.sqrt();
         let fastest = solve_times.iter().cloned().fold(f64::MAX, f64::min);
 
@@ -230,18 +233,20 @@ impl WorkStealer {
         let mut plans = Vec::new();
 
         // Find underloaded partitions (fastest solvers)
-        let mean_throughput = metrics.iter()
-            .map(|m| m.throughput())
-            .sum::<f64>() / metrics.len() as f64;
+        let mean_throughput =
+            metrics.iter().map(|m| m.throughput()).sum::<f64>() / metrics.len() as f64;
 
-        let mut fast_partitions: Vec<&PartitionMetrics> = metrics.iter()
+        let mut fast_partitions: Vec<&PartitionMetrics> = metrics
+            .iter()
             .filter(|m| m.throughput() > mean_throughput * 1.1)
             .collect();
 
         // Sort fastest first
-        fast_partitions.sort_by(|a, b|
-            b.throughput().partial_cmp(&a.throughput()).unwrap_or(std::cmp::Ordering::Equal)
-        );
+        fast_partitions.sort_by(|a, b| {
+            b.throughput()
+                .partial_cmp(&a.throughput())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for &(straggler_id, slowdown_ratio) in stragglers {
             let straggler = match metrics.iter().find(|m| m.partition_id == straggler_id) {
@@ -314,7 +319,11 @@ impl BalanceMonitor {
 
     /// Initialize metrics with actual element counts.
     pub fn set_partition_info(&mut self, partition_id: u32, element_count: u32, ghost_count: u32) {
-        if let Some(m) = self.metrics.iter_mut().find(|m| m.partition_id == partition_id) {
+        if let Some(m) = self
+            .metrics
+            .iter_mut()
+            .find(|m| m.partition_id == partition_id)
+        {
             m.element_count = element_count;
             m.ghost_count = ghost_count;
         }
@@ -322,7 +331,11 @@ impl BalanceMonitor {
 
     /// Record a timestep solve time for a partition.
     pub fn record(&mut self, partition_id: u32, solve_time: f64) {
-        if let Some(m) = self.metrics.iter_mut().find(|m| m.partition_id == partition_id) {
+        if let Some(m) = self
+            .metrics
+            .iter_mut()
+            .find(|m| m.partition_id == partition_id)
+        {
             m.record_solve_time(solve_time);
         }
         self.step_counter += 1;
@@ -348,7 +361,8 @@ impl BalanceMonitor {
 
         info!(
             "Load imbalance detected (score={:.2}): {} stragglers",
-            score, stragglers.len()
+            score,
+            stragglers.len()
         );
 
         // Generate plans
@@ -475,10 +489,7 @@ mod tests {
         let detector = StragglerDetector::with_defaults();
         let stragglers = detector.detect(&metrics);
 
-        assert!(
-            stragglers.is_empty(),
-            "No stragglers when balanced"
-        );
+        assert!(stragglers.is_empty(), "No stragglers when balanced");
     }
 
     #[test]
@@ -509,7 +520,10 @@ mod tests {
             "Should generate at least one migration plan"
         );
         assert_eq!(plans[0].from_partition, 2, "Should migrate FROM straggler");
-        assert!(plans[0].to_partition <= 1, "Should migrate TO a fast partition");
+        assert!(
+            plans[0].to_partition <= 1,
+            "Should migrate TO a fast partition"
+        );
         assert!(plans[0].elements_to_move > 0, "Should move some elements");
     }
 
@@ -528,10 +542,7 @@ mod tests {
         }
 
         let score = monitor.balance_score();
-        assert!(
-            score > 0.0,
-            "Balance score should be >0 with unequal loads"
-        );
+        assert!(score > 0.0, "Balance score should be >0 with unequal loads");
 
         // Check should produce plans at the right interval
         // step_counter is 300 at this point (100 * 3 partitions)

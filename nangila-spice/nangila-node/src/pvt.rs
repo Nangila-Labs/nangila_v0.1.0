@@ -245,11 +245,11 @@ impl GoldenTrajectory {
 
         let mut pos = 6usize; // skip magic + version
 
-        let n_points = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?) as usize;
+        let n_points = u32::from_le_bytes(data[pos..pos + 4].try_into().ok()?) as usize;
         pos += 4;
-        let n_nodes = u32::from_le_bytes(data[pos..pos+4].try_into().ok()?) as usize;
+        let n_nodes = u32::from_le_bytes(data[pos..pos + 4].try_into().ok()?) as usize;
         pos += 4;
-        let dt = f64::from_le_bytes(data[pos..pos+8].try_into().ok()?);
+        let dt = f64::from_le_bytes(data[pos..pos + 8].try_into().ok()?);
         pos += 8;
 
         // Node names
@@ -259,14 +259,18 @@ impl GoldenTrajectory {
         // Waveform data
         let mut points = Vec::with_capacity(n_points);
         for _ in 0..n_points {
-            if pos + 8 > data.len() { break; }
-            let time = f64::from_le_bytes(data[pos..pos+8].try_into().ok()?);
+            if pos + 8 > data.len() {
+                break;
+            }
+            let time = f64::from_le_bytes(data[pos..pos + 8].try_into().ok()?);
             pos += 8;
 
             let mut voltages = Vec::with_capacity(n_nodes);
             for _ in 0..n_nodes {
-                if pos + 8 > data.len() { return None; }
-                let v = f64::from_le_bytes(data[pos..pos+8].try_into().ok()?);
+                if pos + 8 > data.len() {
+                    return None;
+                }
+                let v = f64::from_le_bytes(data[pos..pos + 8].try_into().ok()?);
                 pos += 8;
                 voltages.push(v);
             }
@@ -314,7 +318,10 @@ impl PvtCache {
     pub fn new(max_size: usize) -> Self {
         Self {
             trajectories: HashMap::new(),
-            stats: PvtCacheStats { max_size, ..Default::default() },
+            stats: PvtCacheStats {
+                max_size,
+                ..Default::default()
+            },
         }
     }
 
@@ -326,7 +333,8 @@ impl PvtCache {
                 self.stats.evictions += 1;
             }
         }
-        self.trajectories.insert(trajectory.corner.name.clone(), trajectory);
+        self.trajectories
+            .insert(trajectory.corner.name.clone(), trajectory);
     }
 
     pub fn get(&mut self, corner_name: &str) -> Option<&GoldenTrajectory> {
@@ -414,7 +422,10 @@ impl DeltaSolver {
             );
         }
 
-        let n_nodes = self.golden.points.first()
+        let n_nodes = self
+            .golden
+            .points
+            .first()
             .map(|p| p.voltages.len())
             .unwrap_or(0);
 
@@ -426,19 +437,22 @@ impl DeltaSolver {
         let mut peak_delta = 0.0f64;
 
         for point in &self.golden.points {
-            let corrected_voltages: Vec<f64> = point.voltages.iter().map(|&v| {
-                let v_corner = if use_delta {
-                    // Linear approximation: scale VDD, add thermal offset
-                    v * vdd_scale * delta_params.mobility_factor.sqrt()
-                        + temp_correction
-                } else {
-                    v // Placeholder — full sim would replace this
-                };
+            let corrected_voltages: Vec<f64> = point
+                .voltages
+                .iter()
+                .map(|&v| {
+                    let v_corner = if use_delta {
+                        // Linear approximation: scale VDD, add thermal offset
+                        v * vdd_scale * delta_params.mobility_factor.sqrt() + temp_correction
+                    } else {
+                        v // Placeholder — full sim would replace this
+                    };
 
-                let delta_v = v_corner - v;
-                peak_delta = peak_delta.max(delta_v.abs());
-                delta_v
-            }).collect();
+                    let delta_v = v_corner - v;
+                    peak_delta = peak_delta.max(delta_v.abs());
+                    delta_v
+                })
+                .collect();
 
             delta_waveform.push(WaveformPoint {
                 time: point.time,
@@ -465,10 +479,16 @@ impl DeltaSolver {
 
     /// Reconstruct full waveform for a corner from its delta result.
     pub fn reconstruct(&self, delta: &DeltaSolveResult) -> Vec<WaveformPoint> {
-        self.golden.points.iter().zip(delta.delta_waveform.iter())
+        self.golden
+            .points
+            .iter()
+            .zip(delta.delta_waveform.iter())
             .map(|(golden_pt, delta_pt)| WaveformPoint {
                 time: golden_pt.time,
-                voltages: golden_pt.voltages.iter().zip(delta_pt.voltages.iter())
+                voltages: golden_pt
+                    .voltages
+                    .iter()
+                    .zip(delta_pt.voltages.iter())
                     .map(|(g, d)| g + d)
                     .collect(),
             })
@@ -517,7 +537,10 @@ mod tests {
         let corner = CornerSpec::new(ProcessCorner::FF, 1.9, 40.0);
         let delta = corner.delta_params(&nom);
 
-        assert!(delta.is_linearisable(), "FF corner with 0.1V/13°C should be linearisable");
+        assert!(
+            delta.is_linearisable(),
+            "FF corner with 0.1V/13°C should be linearisable"
+        );
         assert!((delta.delta_vdd - 0.1).abs() < 1e-6);
     }
 
@@ -533,7 +556,10 @@ mod tests {
         };
         let delta = extreme.delta_params(&nom);
 
-        assert!(!delta.is_linearisable(), "Extreme corner should require full sim");
+        assert!(
+            !delta.is_linearisable(),
+            "Extreme corner should require full sim"
+        );
     }
 
     #[test]
@@ -597,8 +623,15 @@ mod tests {
         let result = solver.solve_corner(ff_corner);
 
         assert!(result.used_delta_mode, "FF corner should use delta mode");
-        assert!(result.peak_delta_v >= 0.0, "Peak delta should be non-negative");
-        assert_eq!(result.delta_waveform.len(), 100, "Should have same timesteps as golden");
+        assert!(
+            result.peak_delta_v >= 0.0,
+            "Peak delta should be non-negative"
+        );
+        assert_eq!(
+            result.delta_waveform.len(),
+            100,
+            "Should have same timesteps as golden"
+        );
     }
 
     #[test]
@@ -635,7 +668,8 @@ mod tests {
         // kT/q at 300K ≈ 25.85mV
         assert!(
             (vt - 0.02585).abs() < 0.001,
-            "Thermal voltage at 27°C should be ~25.85mV, got {:.4e}", vt
+            "Thermal voltage at 27°C should be ~25.85mV, got {:.4e}",
+            vt
         );
     }
 }

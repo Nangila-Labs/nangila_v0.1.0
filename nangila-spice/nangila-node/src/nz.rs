@@ -136,11 +136,7 @@ impl NzWriter {
     ///
     /// `time`: timestep values
     /// `waveforms`: map of node_name → voltage values (same length as time)
-    pub fn compress(
-        &mut self,
-        time: &[f64],
-        waveforms: &[(&str, &[f64])],
-    ) -> NzFile {
+    pub fn compress(&mut self, time: &[f64], waveforms: &[(&str, &[f64])]) -> NzFile {
         let num_points = time.len();
         let node_names: Vec<String> = waveforms.iter().map(|(n, _)| n.to_string()).collect();
 
@@ -173,12 +169,7 @@ impl NzWriter {
     }
 
     /// Compress a single node's waveform into blocks.
-    fn compress_node(
-        &mut self,
-        node_idx: u32,
-        time: &[f64],
-        values: &[f64],
-    ) -> Vec<NzBlock> {
+    fn compress_node(&mut self, node_idx: u32, time: &[f64], values: &[f64]) -> Vec<NzBlock> {
         let mut blocks = Vec::new();
         let mut pos = 0;
         let n = values.len();
@@ -245,9 +236,8 @@ impl NzWriter {
         let mut consecutive_failures = 0;
 
         for i in 0..values.len() {
-            let predicted = self.quadratic_predict(
-                base_value, base_gradient, time[0], time[i], values, i,
-            );
+            let predicted =
+                self.quadratic_predict(base_value, base_gradient, time[0], time[i], values, i);
             let residual = values[i] - predicted;
 
             if residual.abs() > self.error_bound {
@@ -281,9 +271,8 @@ impl NzWriter {
         // Verify roundtrip accuracy
         for (i, &q) in residuals.iter().enumerate() {
             let reconstructed_residual = q as f64 * scale;
-            let predicted = self.quadratic_predict(
-                base_value, base_gradient, time[0], time[i], values, i,
-            );
+            let predicted =
+                self.quadratic_predict(base_value, base_gradient, time[0], time[i], values, i);
             let reconstructed = predicted + reconstructed_residual;
             let error = (reconstructed - values[i]).abs();
             if error > self.error_bound * 1.1 {
@@ -432,7 +421,10 @@ impl NzReader {
 
         // Magic
         if data.len() < 4 || data[0..4] != NZ_MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid .nz magic"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid .nz magic",
+            ));
         }
         pos += 4;
 
@@ -784,9 +776,7 @@ mod tests {
             let nz = writer.compress(&time, &[("V(test)", &voltage)]);
             let decompressed = NzReader::decompress(&nz);
 
-            for (i, (&orig, &recon)) in
-                voltage.iter().zip(decompressed[0].1.iter()).enumerate()
-            {
+            for (i, (&orig, &recon)) in voltage.iter().zip(decompressed[0].1.iter()).enumerate() {
                 let error = (orig - recon).abs();
                 // Allow some slack for the test (quadratic prediction may have small numerical drift)
                 assert!(

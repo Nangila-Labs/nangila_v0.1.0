@@ -109,7 +109,7 @@ impl FabricNode {
     /// Send a rollback request to a peer.
     pub async fn send_rollback(&mut self, req: RollbackRequest) -> bool {
         let target = req.from_partition; // Send back to the requester? No, broadcast
-        // Actually, rollback is typically broadcast to all neighbors
+                                         // Actually, rollback is typically broadcast to all neighbors
         let mut success = true;
         let targets: Vec<u32> = self.senders.keys().copied().collect();
         for target_id in targets {
@@ -240,10 +240,7 @@ impl SpeculativeDepthController {
         // Immediate depth reduction on rollback
         if self.current_depth > self.min_depth {
             self.current_depth = (self.current_depth * 3 / 4).max(self.min_depth);
-            debug!(
-                "Depth reduced to {} after rollback",
-                self.current_depth
-            );
+            debug!("Depth reduced to {} after rollback", self.current_depth);
         }
     }
 
@@ -308,10 +305,7 @@ impl FabricRouter {
     ///
     /// Returns one FabricNode per partition, each able to send to
     /// all other partitions.
-    pub fn create_mesh(
-        num_partitions: u32,
-        config: FabricConfig,
-    ) -> Vec<FabricNode> {
+    pub fn create_mesh(num_partitions: u32, config: FabricConfig) -> Vec<FabricNode> {
         // Create channels: each partition gets a receiver and can send to all others
         let mut senders_map: HashMap<u32, Vec<(u32, mpsc::Sender<FabricMessage>)>> = HashMap::new();
         let mut receivers: HashMap<u32, mpsc::Receiver<FabricMessage>> = HashMap::new();
@@ -352,8 +346,11 @@ impl FabricRouter {
             });
         }
 
-        info!("Fabric mesh created: {} nodes, {} channels each",
-            num_partitions, num_partitions - 1);
+        info!(
+            "Fabric mesh created: {} nodes, {} channels each",
+            num_partitions,
+            num_partitions - 1
+        );
 
         nodes
     }
