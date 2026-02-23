@@ -8,27 +8,11 @@
 use clap::Parser;
 use tracing::info;
 
-mod balancer;
-mod benchmark;
-mod codec;
-mod comm;
-mod device_model;
-mod fabric;
-mod ghost;
-mod gpu_solver;
-mod mna;
-mod newton;
-mod ngspice_ffi;
-mod nz;
-mod predictor;
-mod pvt;
-mod solver;
-
-use comm::CommLayer;
-use ghost::GhostBuffer;
-use mna::Element;
-use ngspice_ffi::PartitionNetlist;
-use solver::{SimConfig, TransientSolver};
+use nangila_node::comm::CommLayer;
+use nangila_node::ghost::GhostBuffer;
+use nangila_node::mna::Element;
+use nangila_node::ngspice_ffi::PartitionNetlist;
+use nangila_node::solver::{SimConfig, TransientSolver};
 
 /// Nangila SPICE Solver Node
 #[derive(Parser, Debug)]

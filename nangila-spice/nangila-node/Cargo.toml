@@ -10,6 +10,10 @@ license.workspace = true
 name = "nangila-node"
 path = "src/main.rs"
 
+[[bin]]
+name = "bench_gpu"
+path = "src/bin/bench_gpu.rs"
+
 [dependencies]
 faer.workspace = true
 tokio.workspace = true
