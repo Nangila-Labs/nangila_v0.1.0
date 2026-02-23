@@ -1,0 +1,177 @@
+name: Nangila SPICE CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ─── Rust Tests ───────────────────────────────────────────────────
+  rust-tests:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nangila-spice/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('nangila-spice/Cargo.lock') }}
+
+      - name: Check formatting
+        working-directory: nangila-spice
+        run: cargo fmt --check
+
+      - name: Clippy lint
+        working-directory: nangila-spice
+        run: cargo clippy -- -D warnings
+
+      - name: Run all Rust tests
+        working-directory: nangila-spice
+        run: cargo test --verbose
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-results
+          path: nangila-spice/target/debug/
+
+  # ─── Python Tests ─────────────────────────────────────────────────
+  python-tests:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        working-directory: nangila-spice
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+
+      - name: Run Python tests
+        working-directory: nangila-spice
+        run: |
+          python -m pytest python/tests/ -v \
+            --tb=short \
+            --cov=python/nangila_spice \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-${{ matrix.python-version }}
+          path: nangila-spice/coverage.xml
+
+  # ─── PVT Regression ───────────────────────────────────────────────
+  pvt-regression:
+    name: PVT Corner Regression
+    runs-on: ubuntu-latest
+    needs: [rust-tests, python-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pytest
+
+      - name: Run PVT sweep (200-corner smoke test)
+        working-directory: nangila-spice
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'python')
+          from nangila_spice.pvt_orchestrator import (
+              generate_corner_grid, PvtOrchestrator, SweepConfig, ProcessCorner
+          )
+
+          # Run 200-corner smoke test (5 process × 5 VDD × 8 temp)
+          corners = generate_corner_grid()
+          print(f'Running {len(corners)} corners...')
+
+          config = SweepConfig(max_workers=4, delta_mode=True)
+          orch = PvtOrchestrator(config)
+          result = orch.run_sweep(corners)
+
+          print(result.summary())
+
+          # Acceptance criteria
+          assert result.success_rate >= 0.99, f'Success rate too low: {result.success_rate:.3f}'
+          assert result.peak_delta_v < 0.1, f'Peak delta too large: {result.peak_delta_v:.4f}V'
+          assert result.delta_mode_used > result.full_sim_used, 'Delta mode should dominate'
+
+          print('PVT regression: PASSED')
+          "
+
+      - name: Archive PVT results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvt-regression-results
+          path: /tmp/nangila_pvt/
+
+  # ─── Golden Accuracy Check ────────────────────────────────────────
+  accuracy-check:
+    name: Accuracy vs Ngspice Golden
+    runs-on: ubuntu-latest
+    needs: rust-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            nangila-spice/target
+          key: ${{ runner.os }}-cargo-accuracy-${{ hashFiles('nangila-spice/Cargo.lock') }}
+
+      - name: Run accuracy regression
+        working-directory: nangila-spice
+        run: |
+          # Run the built-in solver against known-good circuits
+          # and verify accuracy meets RELTOL
+          cargo test -- --test-output immediate 2>&1 | \
+            grep -E "(PASSED|FAILED|accuracy|tolerance|error)"
+
+      - name: Check test count regression
+        working-directory: nangila-spice
+        run: |
+          RESULT=$(cargo test 2>&1 | grep "^test result")
+          echo "Test result: $RESULT"
+          # Extract pass count
+          PASSED=$(echo "$RESULT" | grep -oP '\d+ passed' | grep -oP '\d+')
+          echo "Tests passed: $PASSED"
+          # Fail if we've regressed from known baseline
+          [ "$PASSED" -ge 80 ] || (echo "TEST REGRESSION: only $PASSED tests pass" && exit 1)

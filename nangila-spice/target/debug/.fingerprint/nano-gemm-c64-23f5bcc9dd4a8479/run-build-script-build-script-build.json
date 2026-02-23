@@ -1,0 +1,1 @@
+{"rustc":16243257175721966122,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[8911114634098116660,"build_script_build",false,16254323925620321119]],"local":[{"RerunIfChanged":{"output":"debug/build/nano-gemm-c64-23f5bcc9dd4a8479/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}
