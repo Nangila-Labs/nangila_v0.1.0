@@ -1,3 +1,4 @@
+use crate::device_model::{DiodeModel, MosfetLevel1};
 use crate::mna::Element;
 use crate::ngspice_ffi::PartitionNetlist;
 use std::collections::HashMap;
@@ -344,14 +345,11 @@ impl SpiceParser {
             }
             'M' => {
                 // MOSFET: Mname drain gate source bulk MODEL [W=.. L=..]
-                // We stamp it as a voltage-controlled current source approximation
-                // for the DC operating point (Level-1 linear region with beta * Vgs).
-                // Full Newton-Raphson non-linear treatment is in Sprint 15.
                 if tokens.len() >= 6 {
                     let d = self.resolve_node(tokens[1], prefix);
-                    let _g = self.resolve_node(tokens[2], prefix);
+                    let g = self.resolve_node(tokens[2], prefix);
                     let s = self.resolve_node(tokens[3], prefix);
-                    let _b = self.resolve_node(tokens[4], prefix);
+                    let b = self.resolve_node(tokens[4], prefix);
                     let model_name = tokens[5].to_uppercase();
 
                     // Parse optional W= L= parameters
@@ -369,27 +367,55 @@ impl SpiceParser {
                         }
                     }
 
-                    // Level-1 linear approximation: Ids = beta*(W/L)*Vgs as a resistor between D and S
-                    // (a placeholder until Newton-Raphson device stamping is integrated)
-                    let beta = 100e-6; // A/V^2 (typical NMOS µCox default)
-                    let wl = w / l;
-                    let r_equiv = 1.0 / (beta * wl * 1.0); // Assume Vgs ≈ 1V for DC linearisation
-                    debug!("MOSFET {} ({}), W/L={:.2}, R_equiv={:.2}", tokens[0], model_name, wl, r_equiv);
-                    self.elements.push(Element::Resistor { a: d, b: s, r: r_equiv });
+                    // Look up parameters from .MODEL card or use defaults
+                    let mut vth = 0.5;
+                    let mut u0 = 0.04; // 400 cm^2/Vs ~ 0.04 m^2/Vs typical NMOS
+                    let mut tox = 2e-9; // 2nm typical
+                    
+                    if let Some(model) = self.models.get(&model_name) {
+                        if let Some(&v) = model.params.get("vto") { vth = v; }
+                        if let Some(&u) = model.params.get("u0") { u0 = u * 1e-4; } // convert cm^2/Vs to m^2/Vs
+                        if let Some(&t) = model.params.get("tox") { tox = t; }
+                    }
+
+                    let eps_ox = 3.9 * 8.854e-12;
+                    let cox = eps_ox / tox;
+                    let beta = u0 * cox * (w / l);
+
+                    let model = MosfetLevel1 {
+                        vth,
+                        beta,
+                        lambda: 0.1, // Fixed channel length modulation for now
+                        node_g: g,
+                        node_d: d,
+                        node_s: s,
+                    };
+                    self.elements.push(Element::Mosfet { d, g, s, b, model });
                 }
             }
             'D' => {
                 // Diode: Dname anode cathode MODEL [AREA=..]
-                // Stamp as a nonlinear-resistor placeholder for the DC operating
-                // point (full Shockley model handled by device_model.rs in NR loop).
                 if tokens.len() >= 4 {
                     let anode  = self.resolve_node(tokens[1], prefix);
                     let cathode = self.resolve_node(tokens[2], prefix);
                     let model_name = tokens[3].to_uppercase();
-                    // Default diode small-signal resistance ~26Ω at 1mA (kT/q / I)
-                    let r_on = 26.0;
-                    debug!("Diode {} ({}), r_on={:.1}Ω", tokens[0], model_name, r_on);
-                    self.elements.push(Element::Resistor { a: anode, b: cathode, r: r_on });
+                    
+                    let mut is = 1e-14;
+                    let mut n = 1.0;
+                    if let Some(model) = self.models.get(&model_name) {
+                        if let Some(&v) = model.params.get("is") { is = v; }
+                        if let Some(&v) = model.params.get("n") { n = v; }
+                    }
+                    
+                    let model = DiodeModel {
+                        is,
+                        vt: 0.02585,
+                        n,
+                        node_p: anode,
+                        node_n: cathode,
+                    };
+                    
+                    self.elements.push(Element::Diode { p: anode, n: cathode, model });
                 }
             }
             'X' => {

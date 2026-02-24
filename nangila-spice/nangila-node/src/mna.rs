@@ -15,6 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::device_model::{DiodeModel, MosfetLevel1};
+
 /// A circuit element in the partition's sub-netlist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Element {
@@ -28,6 +30,10 @@ pub enum Element {
     CurrentSource { pos: usize, neg: usize, i: f64 },
     /// Ghost node injection: fixed voltage from neighbor partition
     GhostSource { node: usize, voltage: f64 },
+    /// Non-linear Diode (node_p, node_n)
+    Diode { p: usize, n: usize, model: DiodeModel },
+    /// Non-linear MOSFET (Drain, Gate, Source, Bulk)
+    Mosfet { d: usize, g: usize, s: usize, b: usize, model: MosfetLevel1 },
 }
 
 /// The MNA system: G·x = b with optional companion model for capacitors.
@@ -101,6 +107,9 @@ impl MnaSystem {
                 }
                 Element::GhostSource { node, voltage } => {
                     self.stamp_ghost(*node, *voltage);
+                }
+                Element::Mosfet { .. } | Element::Diode { .. } => {
+                    // Handled dynamically by Newton-Raphson outer loop
                 }
             }
         }
@@ -211,6 +220,46 @@ impl MnaSystem {
             let g_large = 1e12;
             self.g_matrix[ni * self.size + ni] += g_large;
             self.b_vector[ni] += g_large * voltage;
+        }
+    }
+
+    /// Stamp the linearised equivalent conductance and Norton current of a Diode.
+    pub fn stamp_diode(&mut self, p: usize, n: usize, g_eq: f64, i_eq: f64) {
+        if p > 0 {
+            let pi = p - 1;
+            self.g_matrix[pi * self.size + pi] += g_eq;
+            self.b_vector[pi] -= i_eq; // Equation: sum += I_eq
+        }
+        if n > 0 {
+            let ni = n - 1;
+            self.g_matrix[ni * self.size + ni] += g_eq;
+            self.b_vector[ni] += i_eq; // Equation: sum -= I_eq
+        }
+        if p > 0 && n > 0 {
+            let pi = p - 1;
+            let ni = n - 1;
+            self.g_matrix[pi * self.size + ni] -= g_eq;
+            self.g_matrix[ni * self.size + pi] -= g_eq;
+        }
+    }
+
+    /// Stamp the linearised equivalent transconductance and Norton current of a MOSFET.
+    pub fn stamp_mosfet(&mut self, d: usize, g: usize, s: usize, gm: f64, gds: f64, i_eq: f64) {
+        // D equation: Id leaves drain
+        if d > 0 {
+            let di = d - 1;
+            if g > 0 { self.g_matrix[di * self.size + (g - 1)] += gm; }
+            if s > 0 { self.g_matrix[di * self.size + (s - 1)] -= (gm + gds); }
+            self.g_matrix[di * self.size + di] += gds;
+            self.b_vector[di] -= i_eq;
+        }
+        // S equation: Id enters source
+        if s > 0 {
+            let si = s - 1;
+            if g > 0 { self.g_matrix[si * self.size + (g - 1)] -= gm; }
+            if d > 0 { self.g_matrix[si * self.size + (d - 1)] -= gds; }
+            self.g_matrix[si * self.size + si] += (gm + gds);
+            self.b_vector[si] += i_eq;
         }
     }
 

@@ -52,11 +52,13 @@ pub trait DeviceModel {
 
 // ─── Diode Model ───────────────────────────────────────────────────
 
+use serde::{Deserialize, Serialize};
+
 /// Shockley ideal diode model.
 ///
 /// I = Is * (exp(V/n*Vt) - 1)
 /// where V = Vp - Vn, Vt = kT/q ≈ 25.85mV at 300K
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiodeModel {
     /// Saturation current (A)
     pub is: f64,
@@ -141,7 +143,7 @@ pub enum MosfetRegion {
 ///   - Saturation: Vgs > Vth, Vds > Vgs-Vth → Id = β/2*(Vgs-Vth)²*(1+λ*Vds)
 ///
 /// Where β = μn * Cox * W/L
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MosfetLevel1 {
     /// Threshold voltage (V)
     pub vth: f64,

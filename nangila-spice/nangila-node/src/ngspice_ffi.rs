@@ -24,6 +24,9 @@ use tracing::{info, warn};
 
 use crate::mna::{Element, MnaSystem};
 use crate::solver::PartitionState;
+use crate::newton::{NewtonSolver, NrState};
+use crate::gpu_solver::SparseMatrix;
+use crate::device_model::DeviceModel;
 
 /// Backend solver selection.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -52,6 +55,7 @@ pub struct SolverEngine {
     backend: SolverBackend,
     netlist: PartitionNetlist,
     mna: Option<MnaSystem>,
+    nr_solver: Option<NewtonSolver>,
 }
 
 impl SolverEngine {
@@ -70,11 +74,17 @@ impl SolverEngine {
         } else {
             None
         };
+        let nr_solver = if backend == SolverBackend::BuiltIn {
+            Some(NewtonSolver::with_defaults())
+        } else {
+            None
+        };
 
         Self {
             backend,
             netlist,
             mna,
+            nr_solver,
         }
     }
 
@@ -85,11 +95,17 @@ impl SolverEngine {
         } else {
             None
         };
+        let nr_solver = if backend == SolverBackend::BuiltIn {
+            Some(NewtonSolver::with_defaults())
+        } else {
+            None
+        };
 
         Self {
             backend,
             netlist,
             mna,
+            nr_solver,
         }
     }
 
@@ -129,15 +145,14 @@ impl SolverEngine {
         dt: f64,
     ) -> Option<PartitionState> {
         let mna = self.mna.as_mut()?;
+        let nr_solver = self.nr_solver.as_mut()?;
 
         // Update ghost node voltages in the element list
         let mut elements = self.netlist.elements.clone();
         for (net_id, voltage) in ghost_voltages {
-            // Find the local node for this ghost
             if let Some((_gid, local_node, _owner)) =
                 self.netlist.ghost_map.iter().find(|(gid, _, _)| gid == net_id)
             {
-                // Add/update ghost source
                 elements.push(Element::GhostSource {
                     node: *local_node,
                     voltage: *voltage,
@@ -145,21 +160,52 @@ impl SolverEngine {
             }
         }
 
-        // Rebuild MNA with updated ghost values
-        *mna = MnaSystem::new(self.netlist.num_nodes, elements);
+        // Rebuild MNA to get structural size (vsources)
+        *mna = MnaSystem::new(self.netlist.num_nodes, elements.clone());
+        let sys_size = mna.size;
 
-        // Stamp and solve
-        mna.stamp_all(&current.voltages, dt);
+        // Current voltages guess from prior step
+        let mut initial_guess = current.voltages.clone();
+        initial_guess.resize(sys_size, 0.0);
 
-        if !mna.solve() {
-            warn!("MNA solve failed (singular matrix)");
+        let nr_state = NrState::new(sys_size).with_initial_guess(initial_guess);
+
+        let final_state = nr_solver.solve_timestep(nr_state, |v_guess| {
+            // 1. Stamp linear components (and calculate RHS from prior timestep capacitors)
+            let mut local_mna = MnaSystem::new(self.netlist.num_nodes, elements.clone());
+            local_mna.stamp_all(&current.voltages, dt);
+
+            // 2. Add Non-Linear stamps using current v_guess
+            for el in &elements {
+                match el {
+                    Element::Mosfet { d, g, s, model, .. } => {
+                        let (gm, gds, i_eq) = model.mna_stamp(v_guess);
+                        local_mna.stamp_mosfet(*d, *g, *s, gm, gds, i_eq);
+                    }
+                    Element::Diode { p, n, model } => {
+                        let stamp = model.stamp(
+                            if *p > 0 { v_guess[*p - 1] } else { 0.0 },
+                            if *n > 0 { v_guess[*n - 1] } else { 0.0 },
+                        );
+                        local_mna.stamp_diode(*p, *n, stamp.g_eq, stamp.i_eq);
+                    }
+                    _ => {}
+                }
+            }
+
+            // 3. Convert assembled dense MNA to SparseMatrix for GpuSolver
+            let mut sparse = SparseMatrix::from_dense(&local_mna.g_matrix, local_mna.size, 1e-30);
+            sparse.rhs = local_mna.b_vector.clone();
+            sparse
+        });
+
+        if !final_state.converged {
+            warn!("Newton-Raphson failed to converge at t={}", current.time + dt);
             return None;
         }
 
-        // Extract node voltages (only the node voltages, not branch currents)
-        let voltages: Vec<f64> = (0..self.netlist.num_nodes)
-            .map(|i| mna.x_vector[i])
-            .collect();
+        // Extract pure node voltages
+        let voltages: Vec<f64> = final_state.voltages[0..self.netlist.num_nodes].to_vec();
 
         Some(PartitionState {
             voltages,

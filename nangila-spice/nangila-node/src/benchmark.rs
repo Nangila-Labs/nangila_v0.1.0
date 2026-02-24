@@ -203,6 +203,16 @@ fn count_nodes(elements: &[Element]) -> usize {
             Element::GhostSource { node, .. } => {
                 nodes.insert(*node);
             }
+            Element::Mosfet { d, g, s, b: bulk, .. } => {
+                nodes.insert(*d);
+                nodes.insert(*g);
+                nodes.insert(*s);
+                nodes.insert(*bulk);
+            }
+            Element::Diode { p, n, .. } => {
+                nodes.insert(*p);
+                nodes.insert(*n);
+            }
         }
     }
     nodes.remove(&0); // remove ground
