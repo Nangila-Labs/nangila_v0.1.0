@@ -269,7 +269,7 @@ impl DeviceModel for ResistorModel {
         }
     }
 
-    fn stamp(&self, vp: f64, vn: f64) -> DeviceStamp {
+    fn stamp(&self, _vp: f64, _vn: f64) -> DeviceStamp {
         let g = 1.0 / self.resistance;
         DeviceStamp {
             g_eq: g,

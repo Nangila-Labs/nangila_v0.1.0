@@ -161,7 +161,7 @@ impl StragglerDetector {
         let threshold = mean + self.config.threshold_sigma * stddev;
 
         let mut stragglers = Vec::new();
-        for (i, m) in metrics.iter().enumerate() {
+        for (_i, m) in metrics.iter().enumerate() {
             let t = m.avg_solve_time();
             let ratio = if fastest > 0.0 { t / fastest } else { 1.0 };
 

@@ -26,7 +26,7 @@ pub struct SparseMatrix {
     pub values: Vec<f64>,
     /// Column indices for each non-zero (len = nnz)
     pub col_indices: Vec<i32>,
-    /// Row pointer: row i spans values[row_ptr[i]..row_ptr[i+1]] (len = n+1)
+    /// Row pointer: row `i` spans `values[row_ptr[i]..row_ptr[i+1]]` (len = n+1)
     pub row_ptr: Vec<i32>,
     /// Right-hand side vector (len = n)
     pub rhs: Vec<f64>,

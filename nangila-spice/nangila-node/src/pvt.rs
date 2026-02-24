@@ -253,7 +253,7 @@ impl GoldenTrajectory {
         pos += 8;
 
         // Node names
-        let mut node_names = Vec::with_capacity(n_nodes);
+        let node_names = Vec::with_capacity(n_nodes);
         // (In this minimal version, node names are not stored in the waveform section)
 
         // Waveform data

@@ -550,7 +550,7 @@ impl NzReader {
 
     /// Decompress all waveforms from an NzFile.
     ///
-    /// Returns: Vec of (node_name, Vec<f64>) — one entry per node.
+    /// Returns: Vec of (node_name, `Vec<f64>`) — one entry per node.
     pub fn decompress(nz: &NzFile) -> Vec<(String, Vec<f64>)> {
         let num_points = nz.header.num_points as usize;
         let num_nodes = nz.header.num_nodes as usize;
