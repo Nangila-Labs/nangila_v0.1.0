@@ -1,3 +1,14 @@
+/**
+ * @file cusparse_solver.cu
+ * @brief Nangila SPICE cuSPARSE GPU Factorization Backend
+ *
+ * This file implements the C++ FFI bridge for the Rust `nangila-node` solver.
+ * It manages the lifecycle of the NVIDIA cuSPARSE execution context, allocating
+ * GPU memory for the Modified Nodal Analysis (MNA) Compressed Sparse Row (CSR)
+ * matrix elements across the PCIe bus, and executing extremely fast Sparse
+ * Matrix-Vector multiplication (`cusparseSpMV`) for the transient simulation
+ * loop.
+ */
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <iostream>
