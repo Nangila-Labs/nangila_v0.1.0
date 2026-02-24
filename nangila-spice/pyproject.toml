@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nangila-spice"
+version = "0.2.0"
+description = "Nangila SPICE GPU-accelerated circuit simulator"
+readme = "README.md"
+authors = [
+    { name = "Craig Chirara" }
+]
+requires-python = ">=3.8"
+dependencies = [
+    # Add external dependencies here if needed (e.g. numpy, matplotlib)
+]
+
+[project.scripts]
+nangila = "nangila_spice.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
