@@ -76,10 +76,10 @@ def invoke_sweep(args):
         print(f"Error: Netlist not found at {args.netlist}")
         sys.exit(1)
         
-    print(f"Starting Delta-Mode PVT Sweep on {args.netlist} with {args.corners} corners...")
+    print(f"Starting PVT Sweep on {args.netlist} with {args.corners} corners (delta_mode={not args.full_sim})...")
     cfg = SweepConfig(
         max_workers=8,
-        delta_mode=True,
+        delta_mode=not args.full_sim,
         tolerance_v=1e-3,
         save_waveforms=False,
     )
@@ -112,6 +112,7 @@ def main():
     sweep_parser = subparsers.add_parser("sweep", help="Run a massive Monte-Carlo PVT sweep")
     sweep_parser.add_argument("netlist", type=str, help="Baseline netlist to perturb")
     sweep_parser.add_argument("--corners", type=int, default=1000, help="Number of PVT corners to sweep")
+    sweep_parser.add_argument("--full-sim", action="store_true", help="Force full massively-parallel Newton-Raphson simulation sweeps (disables delta mode)")
     
     args = parser.parse_args()
     

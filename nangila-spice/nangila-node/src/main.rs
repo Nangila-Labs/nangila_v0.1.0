@@ -49,6 +49,18 @@ struct Args {
     #[arg(long, default_value_t = 1e-12)]
     dt: f64,
 
+    /// Process corner (TT, FF, SS, FS, SF)
+    #[arg(long, default_value = "TT")]
+    process: String,
+
+    /// Supply Voltage (VDD) in Volts
+    #[arg(long, default_value_t = 1.8)]
+    vdd: f64,
+
+    /// Temperature in Celsius
+    #[arg(long, default_value_t = 27.0)]
+    temp: f64,
+
     /// Run built-in RC demo circuit (for testing)
     #[arg(long, default_value_t = false)]
     demo: bool,
@@ -72,8 +84,10 @@ fn main() {
                 .map_err(|e| e.to_string())
                 .and_then(|file| serde_json::from_reader(file).map_err(|e| e.to_string()))
         } else {
-            info!("Parsing SPICE netlist from: {}", partition_path);
-            SpiceParser::parse_file(&partition_path).map_err(|e| e.to_string())
+            info!("Parsing SPICE netlist from: {} (Corner: {}, {:.2}V, {:.0}C)", 
+                  partition_path, args.process, args.vdd, args.temp);
+            SpiceParser::parse_file(&partition_path, &args.process, args.vdd, args.temp)
+                .map_err(|e| e.to_string())
         };
 
         match netlist_res {

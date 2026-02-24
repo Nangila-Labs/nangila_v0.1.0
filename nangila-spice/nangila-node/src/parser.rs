@@ -65,10 +65,14 @@ pub struct SpiceParser {
     pub models: HashMap<String, ModelCard>,
     /// Mapping: ghost_net_id → (local_node_index, owner_partition_id)
     pub ghost_map: Vec<(u64, usize, u32)>,
+    /// Environmental PVT parameters
+    pub process: String,
+    pub vdd: f64,
+    pub temp_c: f64,
 }
 
 impl SpiceParser {
-    pub fn new() -> Self {
+    pub fn new(process: &str, vdd: f64, temp_c: f64) -> Self {
         let mut map = HashMap::new();
         // GND is strictly Node 0
         map.insert("0".to_string(), 0);
@@ -82,6 +86,9 @@ impl SpiceParser {
             params: HashMap::new(),
             models: HashMap::new(),
             ghost_map: Vec::new(),
+            process: process.to_uppercase(),
+            vdd,
+            temp_c,
         }
     }
 
@@ -332,6 +339,13 @@ impl SpiceParser {
                         self.parse_value(tokens[3])
                     };
 
+                    // PVT Scale DC Voltage source if it looks like VDD
+                    let v = if (v - 1.8).abs() < 0.2 || (v - 1.0).abs() < 0.2 {
+                        v * (self.vdd / 1.8)
+                    } else {
+                        v
+                    };
+
                     self.elements.push(Element::VoltageSource { pos, neg, v });
                 }
             }
@@ -376,6 +390,30 @@ impl SpiceParser {
                         if let Some(&v) = model.params.get("vto") { vth = v; }
                         if let Some(&u) = model.params.get("u0") { u0 = u * 1e-4; } // convert cm^2/Vs to m^2/Vs
                         if let Some(&t) = model.params.get("tox") { tox = t; }
+                    }
+
+                    // PVT CMOS Scaling Laws
+                    let delta_t = self.temp_c - 27.0;
+                    let t_kelvin = self.temp_c + 273.15;
+                    let t_nom_kelvin = 27.0 + 273.15;
+                    
+                    // Temperature effects
+                    vth -= 0.002 * delta_t; 
+                    u0 *= (t_nom_kelvin / t_kelvin).powf(1.5);
+                    
+                    // Process corner effects
+                    match self.process.as_str() {
+                        "FF" => { u0 *= 1.15; vth -= 0.1; }
+                        "SS" => { u0 *= 0.85; vth += 0.1; }
+                        "FS" => {
+                            if model_name.contains("NMOS") || model_name.contains("N") { u0 *= 1.10; vth -= 0.1; } 
+                            else { u0 *= 0.90; vth += 0.1; }
+                        }
+                        "SF" => {
+                            if model_name.contains("NMOS") || model_name.contains("N") { u0 *= 0.90; vth += 0.1; } 
+                            else { u0 *= 1.10; vth -= 0.1; }
+                        }
+                        _ => {} // TT is nominal 1.0 multiplier
                     }
 
                     let eps_ox = 3.9 * 8.854e-12;
@@ -561,8 +599,8 @@ impl SpiceParser {
     }
 
     /// Read an arbitrary SPICE .sp file and convert it into the solver's `PartitionNetlist`.
-    pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<PartitionNetlist, std::io::Error> {
-        let mut parser = SpiceParser::new();
+    pub fn parse_file<P: AsRef<Path>>(path: P, process: &str, vdd: f64, temp_c: f64) -> Result<PartitionNetlist, std::io::Error> {
+        let mut parser = SpiceParser::new(process, vdd, temp_c);
         let path_ref = path.as_ref();
 
         info!("Parsing netlist: {:?}", path_ref);
@@ -620,7 +658,7 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(test_netlist.as_bytes()).unwrap();
 
-        let netlist = SpiceParser::parse_file(&path).unwrap();
+        let netlist = SpiceParser::parse_file(&path, "TT", 1.8, 27.0).unwrap();
         
         assert_eq!(netlist.num_nodes, 2);
         assert_eq!(netlist.elements.len(), 3);
@@ -656,7 +694,7 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(test_netlist.as_bytes()).unwrap();
 
-        let netlist = SpiceParser::parse_file(&path).unwrap();
+        let netlist = SpiceParser::parse_file(&path, "TT", 1.8, 27.0).unwrap();
         
         // Primitives: 1 Vsource, 1 R_load
         // Instances: X1 expands to 2 Resistors, 1 Cap (3 elements)

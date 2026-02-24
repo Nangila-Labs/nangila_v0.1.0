@@ -192,6 +192,9 @@ def _call_rust_solver(
         "--partition", netlist_path,
         "--tstop", str(tstop),
         "--dt", str(dt),
+        f"--process={corner.process.value}",
+        f"--vdd={corner.vdd}",
+        f"--temp={corner.temperature}",
     ]
 
     try:
@@ -281,7 +284,7 @@ def simulate_corner(
     if golden_waveform and use_delta:
         delta = corner.delta_params(CornerSpec.nominal())
         vdd_scale = corner.vdd / 1.8
-        temp_correction = -0.5e-3 * delta["delta_temp"]
+        temp_correction = -0.002 * delta["delta_temp"] # -2mV/°C for non-linear, though delta model is rough
         mob_factor = delta["mobility_factor"] ** 0.5
 
         waveforms = {}
@@ -428,7 +431,7 @@ class PvtOrchestrator:
         with ProcessPoolExecutor(max_workers=self.config.max_workers) as executor:
             futures = {
                 executor.submit(
-                    simulate_corner, c, self.golden_waveform, self.config.delta_mode, None
+                    simulate_corner, c, self.golden_waveform, self.config.delta_mode, netlist_path
                 ): c
                 for c in non_nominal
             }
