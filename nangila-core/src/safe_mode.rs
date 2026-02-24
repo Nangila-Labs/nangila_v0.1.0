@@ -286,7 +286,7 @@ impl SafeMode {
     }
 
     /// Check during recovery cooldown
-    fn check_recovering(&mut self, step: usize) -> SafeModeAction {
+    fn check_recovering(&mut self, _step: usize) -> SafeModeAction {
         // Decrement cooldown by check_interval (we're called every check_interval steps)
         let steps_elapsed = self.config.check_interval;
         self.cooldown_remaining = self.cooldown_remaining.saturating_sub(steps_elapsed);

@@ -27,7 +27,7 @@ def test_gradient_scaling():
         print("=" * 60)
     
     # Create a simple model
-    model = nn.Linear(10, 1, bias=False).to(rank)
+    model = nn.Linear(10, 1, bias=False).to(device)
     
     # Initialize with known weights
     with torch.no_grad():
@@ -37,7 +37,7 @@ def test_gradient_scaling():
     
     # Create same input on all ranks (for deterministic gradient)
     torch.manual_seed(42)
-    x = torch.ones(1, 10, device=rank)
+    x = torch.ones(1, 10, device=device)
     
     # Forward + backward
     y = ddp_model(x)
@@ -49,7 +49,7 @@ def test_gradient_scaling():
     # - After all-reduce with AVG: should still be [1, 1, ..., 1]
     # - NOT [1/world_size, 1/world_size, ..., 1/world_size]
     
-    expected_grad = torch.ones(1, 10, device=rank)
+    expected_grad = torch.ones(1, 10, device=device)
     actual_grad = model.weight.grad
     
     max_diff = (actual_grad - expected_grad).abs().max().item()
@@ -68,7 +68,7 @@ def test_gradient_scaling():
     dist.destroy_process_group()
 
 
-def test_nangila_gradient_parity():
+def test_nangila_gradient_parity(name="Default", compressor_type=0, dgc_sparsity=0.999, power_sgd_rank=1):
     """Test that Nangila gradients match standard DDP"""
     try:
         from nangila.ddp import register_nangila_hook
@@ -83,7 +83,7 @@ def test_nangila_gradient_parity():
     
     if rank == 0:
         print("\n" + "=" * 60)
-        print("TEST: Nangila vs Standard DDP Parity")
+        print(f"TEST: Nangila ({name}) vs Standard DDP Parity")
         print("=" * 60)
     
     # Create two identical models
@@ -106,22 +106,30 @@ def test_nangila_gradient_parity():
         p2.data.copy_(p1.data)
     
     # Standard DDP
-    ddp1 = DDP(model1, device_ids=[rank])
+    device_ids = [rank] if torch.cuda.is_available() else None
+    ddp1 = DDP(model1, device_ids=device_ids)
     
     # Nangila DDP (all_drivers mode with no warmup for testing)
-    ddp2 = DDP(model2, device_ids=[rank])
+    ddp2 = DDP(model2, device_ids=device_ids)
     try:
-        hook = register_nangila_hook(ddp2, warmup_steps=0, prefer_cpp=False)
+        hook = register_nangila_hook(
+            ddp2, 
+            warmup_steps=0, 
+            prefer_cpp=False,
+            compressor_type=compressor_type,
+            dgc_sparsity=dgc_sparsity,
+            power_sgd_rank=power_sgd_rank
+        )
     except Exception as e:
         if rank == 0:
-            print(f"Could not register Nangila hook: {e}")
+            print(f"[{name}] Could not register Nangila hook: {e}")
             print("Skipping parity test")
         dist.destroy_process_group()
         return
     
     # Same input
     torch.manual_seed(42 + rank)
-    x = torch.randn(32, 100, device=rank)
+    x = torch.randn(32, 100, device=device)
     
     # Forward + backward
     loss1 = ddp1(x).sum()
@@ -162,8 +170,14 @@ if __name__ == "__main__":
     # Test 1: Basic gradient scaling
     test_gradient_scaling()
     
-    # Test 2: Nangila parity (if available)
-    test_nangila_gradient_parity()
+    # Test 2: Nangila parity (PredictionResidual)
+    test_nangila_gradient_parity("PredictionResidual", 0)
+
+    # Test 3: Nangila DGC
+    test_nangila_gradient_parity("DGC", 1, dgc_sparsity=0.9) # Low sparsity for small test
+
+    # Test 4: Nangila PowerSGD
+    test_nangila_gradient_parity("PowerSGD", 2, power_sgd_rank=4)
     
     if dist.get_rank() == 0:
         print("\n" + "=" * 60)

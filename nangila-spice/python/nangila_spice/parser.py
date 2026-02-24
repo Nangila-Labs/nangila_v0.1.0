@@ -48,6 +48,59 @@ class Netlist:
             nodes.update(dev.nodes)
         return len(nodes)
 
+    def flatten(self) -> "Netlist":
+        """
+        Produce a flattened version of this netlist where all subcircuits (X)
+        are expanded into their primitive devices.
+        """
+        flat = Netlist(title=self.title, global_nodes=self.global_nodes)
+        
+        for device in self.devices:
+            if device.dev_type == "X":
+                self._flatten_recursive(device.model, device.name, device.nodes, "", flat.devices)
+            else:
+                flat.devices.append(device)
+                
+        return flat
+
+    def _flatten_recursive(self, subckt_name: str, instance_name: str, actual_nodes: list[str], prefix: str, target_devices: list[Device]):
+        """Recursively expand a subcircuit instance into flat devices."""
+        subckt = self.subcircuits.get(subckt_name)
+        if not subckt:
+            return
+
+        port_map = dict(zip(subckt.ports, actual_nodes))
+        new_prefix = f"{prefix}{instance_name}."
+        
+        for dev in subckt.devices:
+            # Map nodes (ports → actual nodes, others → prefixed internal nodes)
+            mapped_nodes = []
+            for node in dev.nodes:
+                if node in port_map:
+                    mapped_nodes.append(port_map[node])
+                elif node in ("0", "gnd") or node in self.global_nodes:
+                    mapped_nodes.append(node)
+                else:
+                    mapped_nodes.append(f"{new_prefix}{node}")
+            
+            if dev.dev_type == "X":
+                self._flatten_recursive(dev.model, dev.name, mapped_nodes, new_prefix, target_devices)
+            else:
+                # Create a new primitive device with mapped nodes and prefixed name.
+                # We preserve the first character (type) to keep SPICE compatibility.
+                # Example: R1 in subckt X1 becomes RX1.R1
+                safe_prefix = new_prefix.replace(".", "_")
+                new_dev_name = f"{dev.name[0]}{safe_prefix}{dev.name[1:]}"
+                
+                new_dev = Device(
+                    name=new_dev_name,
+                    dev_type=dev.dev_type,
+                    nodes=mapped_nodes,
+                    params=dev.params.copy(),
+                    model=dev.model,
+                )
+                target_devices.append(new_dev)
+
 
 def parse_netlist(filepath: str) -> Netlist:
     """

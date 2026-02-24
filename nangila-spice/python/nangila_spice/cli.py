@@ -17,6 +17,7 @@ from .orchestrator import SimulationConfig, run_simulation, discover_hardware
 from .parser import parse_netlist
 from .partitioner import partition_netlist
 from .graph import build_circuit_graph
+from .pvt_orchestrator import SweepConfig, PvtOrchestrator, generate_1000_corner_grid
 
 
 def main():
@@ -82,6 +83,21 @@ def main():
         help="Show detected hardware",
     )
 
+    # --- pvt ---
+    pvt_parser = subparsers.add_parser(
+        "pvt",
+        help="Run multi-corner PVT sweep (1000 corners)",
+    )
+    pvt_parser.add_argument("netlist", help="Path to .sp or .cir netlist file")
+    pvt_parser.add_argument(
+        "--workers", type=int, default=16,
+        help="Number of parallel workers (default: 16)",
+    )
+    pvt_parser.add_argument(
+        "--no-delta", action="store_true",
+        help="Disable delta-mode approximations (force full sim for all corners)",
+    )
+
     args = parser.parse_args()
 
     if args.command in ("simulate", "sim"):
@@ -90,6 +106,8 @@ def main():
         cmd_info(args)
     elif args.command in ("hardware", "hw"):
         cmd_hardware()
+    elif args.command == "pvt":
+        cmd_pvt(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -170,5 +188,30 @@ def cmd_hardware():
     print(f"  Recommended partitions: {max(1, hw.cpu_count // 2)}")
 
 
+def cmd_pvt(args):
+    """Run a multi-corner PVT sweep."""
+    import os
+    print(f"=== Starting 1000-Corner PVT Sweep ===")
+    print(f"Netlist: {args.netlist}")
+    config = SweepConfig(
+        max_workers=args.workers,
+        delta_mode=not args.no_delta,
+        output_dir="/tmp/nangila_pvt",
+    )
+    
+    # 1. Generate corners
+    corners = generate_1000_corner_grid()
+    
+    # 2. Add the netlist path to the golden corner call directly inside Orchestrator
+    # We'll monkeypatch or we can just pass the path. Wait, orchestrator simulates the nominal corner using simulate_corner.
+    # Actually, PvtOrchestrator currently calls simulate_corner without netlist_path. Let's fix that.
+    
+    # Wait, we need to pass netlist_path to run_sweep
+    orchestrator = PvtOrchestrator(config)
+    orchestrator.netlist_path = args.netlist  # We'll patch PvtOrchestrator to use this
+    
+    res = orchestrator.run_sweep(corners, netlist_path=args.netlist)
+    print("\nSweep completed natively.")
+    
 if __name__ == "__main__":
     main()

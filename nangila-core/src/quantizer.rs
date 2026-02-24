@@ -4,9 +4,10 @@
 //! Uses stochastic rounding for unbiased compression.
 
 use crate::Tensor;
+use serde::{Deserialize, Serialize};
 
 /// Compressed tensor representation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressedTensor {
     /// Quantized values (packed INT4, two values per byte)
     pub data: Vec<u8>,
@@ -254,7 +255,7 @@ impl Quantizer {
     fn unpack_int4(&self, packed: &[u8], numel: usize) -> Vec<i8> {
         let mut values = Vec::with_capacity(numel);
 
-        for (i, &byte) in packed.iter().enumerate() {
+        for (_i, &byte) in packed.iter().enumerate() {
             // Low nibble
             let low = (byte & 0x0F) as i8;
             // Sign extend from 4 bits

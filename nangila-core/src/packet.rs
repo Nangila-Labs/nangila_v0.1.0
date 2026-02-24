@@ -131,6 +131,11 @@ impl PacketHeader {
         }
     }
 
+    /// Create a default header
+    pub fn default() -> Self {
+        Self::new_driver(0, 0)
+    }
+
     /// Check if this is a valid Nangila packet
     pub fn is_valid(&self) -> bool {
         self.magic == PACKET_MAGIC && self.version == PROTOCOL_VERSION
@@ -221,6 +226,12 @@ impl PacketHeader {
         reader.read_exact(&mut bytes)?;
         Self::from_bytes(&bytes)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid header"))
+    }
+}
+
+impl Default for PacketHeader {
+    fn default() -> Self {
+        Self::default()
     }
 }
 

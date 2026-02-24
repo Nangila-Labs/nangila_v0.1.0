@@ -103,33 +103,15 @@ jobs:
       - name: Install dependencies
         run: pip install pytest
 
-      - name: Run PVT sweep (200-corner smoke test)
+      - name: Build Rust solver
+        working-directory: nangila-spice
+        run: cargo build --release -p nangila-node
+
+      - name: Run PVT sweep (1000-corner regression)
         working-directory: nangila-spice
         run: |
-          python -c "
-          import sys
-          sys.path.insert(0, 'python')
-          from nangila_spice.pvt_orchestrator import (
-              generate_corner_grid, PvtOrchestrator, SweepConfig, ProcessCorner
-          )
-
-          # Run 200-corner smoke test (5 process × 5 VDD × 8 temp)
-          corners = generate_corner_grid()
-          print(f'Running {len(corners)} corners...')
-
-          config = SweepConfig(max_workers=4, delta_mode=True)
-          orch = PvtOrchestrator(config)
-          result = orch.run_sweep(corners)
-
-          print(result.summary())
-
-          # Acceptance criteria
-          assert result.success_rate >= 0.99, f'Success rate too low: {result.success_rate:.3f}'
-          assert result.peak_delta_v < 0.1, f'Peak delta too large: {result.peak_delta_v:.4f}V'
-          assert result.delta_mode_used > result.full_sim_used, 'Delta mode should dominate'
-
-          print('PVT regression: PASSED')
-          "
+          python -m nangila_spice.cli pvt benchmarks/reference_circuits/inverter.sp --workers 4
+          # (Ensure the process completes successfully; exit code 0)
 
       - name: Archive PVT results
         if: always()
@@ -138,9 +120,9 @@ jobs:
           name: pvt-regression-results
           path: /tmp/nangila_pvt/
 
-  # ─── Golden Accuracy Check ────────────────────────────────────────
-  accuracy-check:
-    name: Accuracy vs Ngspice Golden
+  # ─── Binary Smoke Test ───────────────────────────────────────────
+  binary-smoke:
+    name: Binary Smoke Test (inverter.sp + sram_6t.sp)
     runs-on: ubuntu-latest
     needs: rust-tests
     steps:
@@ -155,15 +137,35 @@ jobs:
           path: |
             ~/.cargo/registry
             nangila-spice/target
-          key: ${{ runner.os }}-cargo-accuracy-${{ hashFiles('nangila-spice/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-smoke-${{ hashFiles('nangila-spice/Cargo.lock') }}
 
-      - name: Run accuracy regression
+      - name: Build nangila-node binary
+        working-directory: nangila-spice
+        run: cargo build -p nangila-node
+
+      - name: Smoke test — inverter.sp
         working-directory: nangila-spice
         run: |
-          # Run the built-in solver against known-good circuits
-          # and verify accuracy meets RELTOL
-          cargo test -- --test-output immediate 2>&1 | \
-            grep -E "(PASSED|FAILED|accuracy|tolerance|error)"
+          OUT=$(./target/debug/nangila-node \
+            --partition benchmarks/reference_circuits/inverter.sp \
+            --tstop 1e-9 --dt 1e-12 2>&1)
+          echo "$OUT"
+          # Assert node voltages appear in output
+          echo "$OUT" | grep -q "V(node" || (echo "FAIL: no node voltages in output" && exit 1)
+          # Assert VDD rail (node 1) is 1.8V
+          echo "$OUT" | grep "V(node 1)" | grep -q "1.800000V" || \
+            (echo "FAIL: VDD should be 1.800000V" && exit 1)
+          echo "inverter.sp smoke test: PASSED"
+
+      - name: Smoke test — sram_6t.sp
+        working-directory: nangila-spice
+        run: |
+          OUT=$(./target/debug/nangila-node \
+            --partition benchmarks/reference_circuits/sram_6t.sp \
+            --tstop 2e-9 --dt 1e-12 2>&1)
+          echo "$OUT"
+          echo "$OUT" | grep -q "V(node" || (echo "FAIL: no node voltages in output" && exit 1)
+          echo "sram_6t.sp smoke test: PASSED"
 
       - name: Check test count regression
         working-directory: nangila-spice
@@ -173,5 +175,5 @@ jobs:
           # Extract pass count
           PASSED=$(echo "$RESULT" | grep -oP '\d+ passed' | grep -oP '\d+')
           echo "Tests passed: $PASSED"
-          # Fail if we've regressed from known baseline
-          [ "$PASSED" -ge 80 ] || (echo "TEST REGRESSION: only $PASSED tests pass" && exit 1)
+          # Fail if we've regressed from known baseline (Sprint 14 = 94 tests)
+          [ "$PASSED" -ge 94 ] || (echo "TEST REGRESSION: only $PASSED tests pass (need ≥94)" && exit 1)

@@ -5,8 +5,11 @@
 
 use crate::safe_mode::{SafeMode, SafeModeAction, SafeModeConfig, SafeModeStats};
 use crate::{
-    CompressedTensor, LayerId, NangilaConfig, Predictor, Quantizer, Reconstructor, Result, Tensor,
+    compressor::{Compressor, PredictionResidualCompressor},
+    config::CompressorType,
+    CompressedTensor, LayerId, NangilaConfig, Reconstructor, Result, Tensor,
     TopologyMask,
+    // Predictor and Quantizer are now internal to specific compressors
 };
 use std::collections::HashMap;
 
@@ -78,11 +81,9 @@ pub struct NangilaState {
     pub config: NangilaConfig,
     /// Topology mask (Driver/Passenger mapping)
     mask: TopologyMask,
-    /// Gradient predictor
-    predictor: Predictor,
-    /// Quantizer for residuals
-    quantizer: Quantizer,
-    /// Reconstructor for decompression
+    /// Composable compressor engine
+    compressor: Box<dyn Compressor>,
+    /// Reconstructor for decompression (Passenger synthesis)
     reconstructor: Reconstructor,
     /// Current training step
     step: usize,
@@ -110,19 +111,26 @@ pub enum CompressionResult {
 impl NangilaState {
     /// Create a new NangilaState with given config and mask
     pub fn new(config: NangilaConfig, mask: TopologyMask) -> Self {
-        let quantizer = Quantizer::new(config.quantize_bits, config.dynamic_gamma);
-        let predictor = Predictor::new(
-            config.momentum,
-            config.warmup_steps + config.shadow_run_steps,
-        );
+        let compressor: Box<dyn Compressor> = match config.compressor_type {
+            CompressorType::PredictionResidual => {
+                Box::new(PredictionResidualCompressor::new(config.clone()))
+            }
+            CompressorType::DGC => {
+                Box::new(crate::dgc::DGCCompressor::new(config.clone()))
+            }
+            CompressorType::PowerSGD => {
+                Box::new(crate::power_sgd::PowerSGDCompressor::new(config.clone()))
+            }
+        };
+
+        // Reconstructor is still needed for Passengers
         let reconstructor =
-            Reconstructor::new(Quantizer::new(config.quantize_bits, config.dynamic_gamma));
+            Reconstructor::new(crate::Quantizer::new(config.quantize_bits, config.dynamic_gamma));
 
         Self {
             config,
             mask,
-            predictor,
-            quantizer,
+            compressor,
             reconstructor,
             step: 0,
             compression_enabled: false,
@@ -143,9 +151,10 @@ impl NangilaState {
     pub fn compress(&mut self, layer_id: LayerId, gradient: &Tensor) -> Result<CompressionResult> {
         // During warmup, pass through raw gradients
         if !self.is_compression_enabled() {
-            // Still update predictor during shadow-run phase
+            // Still update predictor during shadow-run phase if ready
             if self.step >= self.config.warmup_steps {
-                self.predictor.update(layer_id, gradient.clone());
+                // We use update() here to mimic shadow run behavior
+                let _ = self.compressor.update(layer_id, gradient);
             }
             return Ok(CompressionResult::Passthrough(gradient.clone()));
         }
@@ -162,33 +171,20 @@ impl NangilaState {
             return Ok(CompressionResult::Passenger);
         }
 
-        // Driver: compute residual and quantize
-        let prediction = self.predictor.predict(layer_id)?;
-        let residual = gradient.sub(&prediction);
-
-        // Compute prediction error for telemetry
-        let grad_norm = gradient.norm();
-        let residual_norm = residual.norm();
-        let prediction_error = if grad_norm > 1e-6 {
-            residual_norm / grad_norm
-        } else {
-            0.0
-        };
-
-        // Record error for adaptive momentum
-        self.predictor.record_error(layer_id, prediction_error);
-
-        let compressed = self
-            .quantizer
-            .quantize(&residual, layer_id, self.step as u64);
-
-        // Record telemetry
-        let original_bytes = gradient.numel() * 4; // FP32
-        let compressed_bytes = compressed.size_bytes();
+        // Driver: delegate to compressor
+        let packet = self.compressor.compress(gradient, layer_id)?;
+        
+        // Deserialize back to CompressedTensor purely for compatibility/telemetry
+        // This is inefficient but part of the migration
+        let compressed: CompressedTensor = bincode::deserialize(&packet.payload)?;
+        
+        // Record telemetry (approximate)
+        let original_bytes = gradient.numel() * 4;
+        let compressed_bytes = packet.payload.len();
         self.layer_telemetry
             .entry(layer_id)
             .or_insert_with(LayerTelemetry::new)
-            .record_compression(original_bytes, compressed_bytes, prediction_error);
+            .record_compression(original_bytes, compressed_bytes, 0.0); // No error metric available from trait
 
         Ok(CompressionResult::Driver(compressed))
     }
@@ -205,8 +201,17 @@ impl NangilaState {
         let role = self.mask.get_role(layer_id)?;
 
         let gradient = if role.is_driver() {
-            self.reconstructor
-                .reconstruct_driver(layer_id, compressed, &self.predictor)?
+            // Re-serialize strictly to interface with compressor trait (inefficient but necessary for migration)
+            let payload = bincode::serialize(compressed)?;
+            // Use dummy header/step valid for decompress? Or rely on payload
+            let packet = crate::Packet::new(crate::PacketHeader::default(), payload); 
+            
+            let gradient = self.compressor.decompress(&packet, layer_id)?;
+            
+            // Register with reconstructor for potential passenger synthesis
+            self.reconstructor.cache_driver_gradient(layer_id, gradient.clone());
+            
+            gradient
         } else {
             self.reconstructor
                 .synthesize_passenger(layer_id, &self.mask)?
@@ -230,13 +235,36 @@ impl NangilaState {
         let role = self.mask.get_role(layer_id)?;
 
         let gradient = if role.is_driver() {
-            self.reconstructor.reconstruct_driver_partial(
-                layer_id,
-                compressed,
-                &self.predictor,
-                start_index,
-                end_index,
-            )?
+            // Partial decompression is not yet supported on Compressor trait level!
+            // We need to extend trait or fallback.
+            // For now, keeping old logic via direct access if possible? No, we lost 'predictor'.
+            // Falling back to full decompression (inefficient but correct)
+            // Or TODO: Add decompress_partial to trait.
+            // For Phase 1 strict adherence, let's do full decompress + slice.
+            
+            // Re-serialize
+            let payload = bincode::serialize(compressed)?;
+            let packet = crate::Packet::new(crate::PacketHeader::default(), payload);
+            
+            let full_grad = self.compressor.decompress(&packet, layer_id)?;
+            
+            // Slice it 
+            // Tensor structure is simple Vec<f32>.
+            // Need to map indices
+            // This is actually tricky because 'decompress_partial' implies we only transmit/store partial?
+            // FSDP uses it to get SHARD.
+            //
+            // If the buffer is full-sized, we just slice.
+            // If we only have partial data?
+            // CompressedTensor is the full compressed data usually.
+            
+            // Let's stub with TODO or full implementation.
+            // Slicing:
+            let start = start_index.min(full_grad.numel());
+            let end = end_index.min(full_grad.numel());
+            let data = full_grad.data[start..end].to_vec();
+            Tensor::new(data, vec![end - start])
+            
         } else {
             // For passengers, we need the source driver to be cached
             // This requires drivers to be reconstructed before passengers in FSDP
@@ -251,27 +279,64 @@ impl NangilaState {
         Ok(gradient)
     }
 
-    /// Decompress all layers from compressed Driver data
     pub fn decompress_all(
         &mut self,
         compressed_drivers: &HashMap<LayerId, CompressedTensor>,
     ) -> Result<HashMap<LayerId, Tensor>> {
-        self.reconstructor
-            .reconstruct_all(compressed_drivers, &self.mask, &self.predictor)
+        // We can't use Reconstructor::reconstruct_all easily without exposing Predictor from Compressor.
+        // Instead, loop and decompress individually using Compressor trait.
+        // This loses batch optimization potential but works for abstraction.
+        
+        let mut results = HashMap::new();
+        for (&layer_id, compressed) in compressed_drivers {
+             let payload = bincode::serialize(compressed)?;
+             let packet = crate::Packet::new(crate::PacketHeader::default(), payload);
+             let tensor = self.compressor.decompress(&packet, layer_id)?;
+             
+             // Register with reconstructor
+             self.reconstructor.cache_driver_gradient(layer_id, tensor.clone());
+             
+             results.insert(layer_id, tensor);
+        }
+        
+        // Passengers? 'reconstruct_all' usually handles passengers too.
+        // We need to synthesize passengers efficiently.
+        // Reconstructor::synthesize_passengers_bulk?
+        // Let's assume we just returned drivers here.
+        // Original reconstruct_all did both drivers and passengers.
+        
+        // Synthesize passengers
+        // We need 'reconstructor' to handle this.
+        // But 'reconstructor' in NangilaState is intended for Passengers now.
+        // Does 'reconstructor' have access to the decompressed drivers?
+        // We can pass them.
+        
+        // For now, let's implement simplified logic.
+        // Iterate passengers in mask
+        for (passenger_id, _, _) in self.mask.passengers() {
+             let tensor = self.reconstructor.synthesize_passenger(passenger_id, &self.mask)?;
+             results.insert(passenger_id, tensor);
+        }
+        
+        Ok(results)
     }
 
     /// Update predictor state with actual gradient (post-All-Reduce)
     ///
     /// IMPORTANT: Call this with the reconstructed gradient to maintain
     /// bit-perfect consensus between sender and receiver predictors.
+    /// Update predictor state with actual gradient (post-All-Reduce)
+    ///
+    /// IMPORTANT: Call this with the reconstructed gradient to maintain
+    /// bit-perfect consensus between sender and receiver predictors.
     pub fn update_state(&mut self, layer_id: LayerId, gradient: Tensor) {
-        self.predictor.update(layer_id, gradient);
+        let _ = self.compressor.update(layer_id, &gradient);
     }
 
     /// Advance to the next training step
     pub fn step(&mut self) {
         self.step += 1;
-        self.predictor.step();
+        self.compressor.step();
 
         // Enable compression after warmup + shadow-run
         let enable_step = self.config.warmup_steps + self.config.shadow_run_steps;
@@ -310,15 +375,17 @@ impl NangilaState {
         &mut self.mask
     }
 
-    /// Get a reference to the predictor
-    pub fn predictor(&self) -> &Predictor {
-        &self.predictor
+    /// Get predictor state hash for verification
+    pub fn predictor_hash(&self) -> u64 {
+        self.compressor.state_hash()
     }
 
-    /// Get a mutable reference to the predictor (for desync recovery)
-    pub fn predictor_mut(&mut self) -> &mut Predictor {
-        &mut self.predictor
+    /// Handle force sync (reset state from full gradient)
+    pub fn force_sync_layer(&mut self, layer_id: LayerId, gradient: &Tensor) -> Result<()> {
+        self.compressor.force_sync_layer(layer_id, gradient)
     }
+
+    // Predictor and Quantizer accessors removed as they are now encapsulated
 
     /// Get compression statistics
     pub fn stats(&self) -> CompressionStats {
@@ -328,7 +395,7 @@ impl NangilaState {
             num_drivers: self.mask.num_drivers(),
             num_passengers: self.mask.num_passengers(),
             mask_compression_ratio: self.mask.compression_ratio(),
-            quantizer_gamma: self.quantizer.gamma(),
+            quantizer_gamma: 0.0, // Unavailable in generic compressor interface
         }
     }
 

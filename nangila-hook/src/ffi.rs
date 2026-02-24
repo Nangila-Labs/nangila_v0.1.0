@@ -9,8 +9,8 @@
 
 use crate::NangilaHook;
 use nangila_core::{
-    bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16, DataType, NangilaConfig, Packet,
-    PacketHeader, SafeModeAction, SafeModeConfig, Tensor, TopologyMask,
+    bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16, DataType, NangilaConfig, SafeModeAction,
+    SafeModeConfig, Tensor, TopologyMask,
 };
 #[cfg(feature = "cuda")]
 use nangila_cuda::{
@@ -75,7 +75,7 @@ pub unsafe extern "C" fn nangila_init(mask_path: *const c_char) -> NangilaHandle
         }
     };
 
-    let mut hook = NangilaHook::new(NangilaConfig::default(), mask);
+    let hook = NangilaHook::new(NangilaConfig::default(), mask);
     // Enable GPU mode by default for this binding?
     // Or expose a separate init function?
     // Let's add a set_gpu_mode function and call it from C++ if needed.

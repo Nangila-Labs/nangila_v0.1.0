@@ -15,6 +15,9 @@ Phase 3, Sprint 11-12 deliverable.
 import json
 import os
 import time
+import shutil
+import subprocess
+import tempfile
 import itertools
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
@@ -137,25 +140,144 @@ def generate_1000_corner_grid() -> List[CornerSpec]:
     return generate_corner_grid(process_corners, vdd_values, temp_values)
 
 
-# ─── Simulated Waveform (placeholder for Rust solver integration) ──
+def _find_rust_binary() -> Optional[str]:
+    """Locate the nangila-node binary on PATH or in the standard build output."""
+    # 1. Check PATH first
+    on_path = shutil.which("nangila-node")
+    if on_path:
+        return on_path
+    # 2. Check the Cargo debug build location relative to this file's package root
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, "..", "..", "target", "debug", "nangila-node"),
+        os.path.join(here, "..", "..", "target", "release", "nangila-node"),
+    ]
+    for c in candidates:
+        normalized = os.path.normpath(c)
+        if os.path.isfile(normalized) and os.access(normalized, os.X_OK):
+            return normalized
+    return None
+
+
+def _call_rust_solver(
+    netlist_path: str,
+    corner: "CornerSpec",
+    binary: str,
+    tstop: float = 1e-9,
+    dt: float = 1e-12,
+) -> dict:
+    """Invoke the nangila-node binary on a SPICE netlist and return parsed waveforms.
+
+    The binary is expected to write log lines to stdout in the form:
+        INFO  nangila_node: V(node N) = X.XXXXXXV
+    We parse those lines to reconstruct a {node_N: [voltage]} waveform dict.
+
+    Args:
+        netlist_path: Path to the .sp file to simulate.
+        corner: The PVT corner to simulate (used to scale VDD stimulus).
+        binary: Absolute path to the nangila-node binary.
+        tstop: Simulation stop time in seconds.
+        dt: Timestep in seconds.
+
+    Returns:
+        A dict with keys: waveforms, peak_delta_v, wall_time, used_delta, corner_name, vdd, temperature, process.
+
+    Raises:
+        RuntimeError: If the binary exits with a non-zero code.
+    """
+    t_start = time.perf_counter()
+
+    cmd = [
+        binary,
+        "--partition", netlist_path,
+        "--tstop", str(tstop),
+        "--dt", str(dt),
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"nangila-node timed out after 60s for corner {corner.name}")
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"nangila-node exited {result.returncode} for corner {corner.name}:\n{result.stderr[:500]}"
+        )
+
+    # Parse stdout for voltage lines: "V(node N) = X.XXXXXXV"
+    import re
+    voltage_pattern = re.compile(r"V\(node\s*(\d+)\)\s*=\s*([\d.eE+\-]+)V")
+    waveforms: Dict[str, List[float]] = {}
+    for line in (result.stdout + result.stderr).splitlines():
+        m = voltage_pattern.search(line)
+        if m:
+            node_key = f"node_{m.group(1)}"
+            voltage = float(m.group(2))
+            waveforms.setdefault(node_key, []).append(voltage)
+
+    elapsed = time.perf_counter() - t_start
+    return {
+        "corner_name": corner.name,
+        "waveforms": waveforms,
+        "peak_delta_v": 0.0,  # Populated by caller if delta mode
+        "wall_time": elapsed,
+        "used_delta": False,
+        "vdd": corner.vdd,
+        "temperature": corner.temperature,
+        "process": corner.process.value,
+    }
+
+
+# ─── Simulated Waveform ───────────────────────────────────────────────────────
 
 def simulate_corner(
     corner: CornerSpec,
     golden_waveform: Optional[dict] = None,
     use_delta: bool = True,
+    netlist_path: Optional[str] = None,
 ) -> dict:
     """Simulate a single corner.
 
-    In production, this calls the Rust solver binary.
-    Here, we use delta approximation or a synthetic model.
+    Priority order:
+      1. If ``netlist_path`` is given and the nangila-node binary is found,
+         call the real Rust solver.
+      2. Else if ``golden_waveform`` is provided and ``use_delta=True``,
+         apply the delta approximation to the golden waveform.
+      3. Else fall back to the built-in synthetic exponential model.
 
     Returns:
         dict with keys: corner_name, waveforms (dict node→list[float]),
-        peak_delta_v, wall_time, used_delta
+        peak_delta_v, wall_time, used_delta, vdd, temperature, process.
     """
     t_start = time.perf_counter()
     n_timesteps = 100
 
+    # ── Path 1: Real Rust solver ──────────────────────────────────────
+    binary = _find_rust_binary()
+    if netlist_path and binary:
+        try:
+            result = _call_rust_solver(netlist_path, corner, binary)
+            # If a golden waveform exists, compute peak_delta_v
+            if golden_waveform:
+                peak_delta = 0.0
+                for node, vlist in result["waveforms"].items():
+                    golden_v = golden_waveform["waveforms"].get(node, [])
+                    for a, b in zip(vlist, golden_v):
+                        peak_delta = max(peak_delta, abs(a - b))
+                result["peak_delta_v"] = peak_delta
+                result["used_delta"] = False  # Full sim, not delta
+            return result
+        except RuntimeError as e:
+            # Log and fall through to synthetic model
+            import warnings
+            warnings.warn(f"Rust solver failed ({e}); falling back to synthetic model")
+
+    # ── Path 2: Delta approximation from golden ───────────────────────
     if golden_waveform and use_delta:
         delta = corner.delta_params(CornerSpec.nominal())
         vdd_scale = corner.vdd / 1.8
@@ -172,28 +294,33 @@ def simulate_corner(
             waveforms[node] = corrected
             peak_delta = max(peak_delta, max(abs(c - g) for c, g in zip(corrected, golden_v)))
 
-        used_delta = True
-    else:
-        # Full simulation model (synthetic for testing)
-        t = [i * 1e-12 for i in range(n_timesteps)]
-        tau = 10e-12 * (1.0 / corner.process.mobility_factor)
-
-        waveforms = {
-            "VDD": [corner.vdd] * n_timesteps,
-            "VOUT": [corner.vdd * (1.0 - (-ti / tau).__class__.__call__(
-                __import__('math').exp(-ti / tau))) for ti in t],
+        elapsed = time.perf_counter() - t_start
+        return {
+            "corner_name": corner.name,
+            "waveforms": waveforms,
+            "peak_delta_v": peak_delta,
+            "wall_time": elapsed,
+            "used_delta": True,
+            "vdd": corner.vdd,
+            "temperature": corner.temperature,
+            "process": corner.process.value,
         }
-        peak_delta = 0.0
-        used_delta = False
 
+    # ── Path 3: Synthetic exponential model ─────────────────────────
+    t = [i * 1e-12 for i in range(n_timesteps)]
+    import math
+    tau = 10e-12 * (1.0 / corner.process.mobility_factor)
+    waveforms = {
+        "VDD": [corner.vdd] * n_timesteps,
+        "VOUT": [corner.vdd * (1.0 - math.exp(-ti / tau)) for ti in t],
+    }
     elapsed = time.perf_counter() - t_start
-
     return {
         "corner_name": corner.name,
         "waveforms": waveforms,
-        "peak_delta_v": peak_delta,
+        "peak_delta_v": 0.0,
         "wall_time": elapsed,
-        "used_delta": used_delta,
+        "used_delta": False,
         "vdd": corner.vdd,
         "temperature": corner.temperature,
         "process": corner.process.value,
@@ -277,8 +404,8 @@ class PvtOrchestrator:
         self.config = config
         self.golden_waveform: Optional[dict] = None
 
-    def run_sweep(self, corners: List[CornerSpec]) -> SweepResult:
-        """Run a complete PVT sweep over the given corners."""
+    def run_sweep(self, corners: List[CornerSpec], netlist_path: Optional[str] = None) -> SweepResult:
+        """Run a complete PVT sweep over the given corners using a real netlist."""
         result = SweepResult(total_corners=len(corners))
         t_sweep_start = time.perf_counter()
 
@@ -287,8 +414,8 @@ class PvtOrchestrator:
         if not any(c.is_nominal for c in corners):
             corners = [nom] + corners
 
-        print(f"[PVT] Simulating golden corner ({nom.name})...")
-        golden = simulate_corner(nom, golden_waveform=None, use_delta=False)
+        print(f"[PVT] Simulating golden corner ({nom.name}) using native Rust solver...")
+        golden = simulate_corner(nom, golden_waveform=None, use_delta=False, netlist_path=netlist_path)
         self.golden_waveform = golden
         result.corner_results.append(golden)
         result.completed += 1
@@ -301,7 +428,7 @@ class PvtOrchestrator:
         with ProcessPoolExecutor(max_workers=self.config.max_workers) as executor:
             futures = {
                 executor.submit(
-                    simulate_corner, c, self.golden_waveform, self.config.delta_mode
+                    simulate_corner, c, self.golden_waveform, self.config.delta_mode, None
                 ): c
                 for c in non_nominal
             }

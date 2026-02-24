@@ -241,9 +241,7 @@ impl TransientSolver {
 
     /// Get the MNA system size (nodes + voltage source branch currents).
     fn get_mna_size(&self) -> usize {
-        // This is derived from the netlist in the engine
-        // For now, use a reasonable default
-        3 // Will be properly set from netlist
+        self.engine.size()
     }
 }
 

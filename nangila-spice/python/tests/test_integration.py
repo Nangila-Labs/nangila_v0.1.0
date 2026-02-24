@@ -258,6 +258,45 @@ class TestEndToEnd(unittest.TestCase):
                 "Single partition should have 0 ghost nodes"
             )
 
+    def test_hierarchical_expansion(self):
+        """Test that subcircuits are correctly flattened."""
+        with tempfile.NamedTemporaryFile(suffix=".sp", mode="w", delete=False) as f:
+            f.write("* Hierarchical Test\n")
+            f.write(".subckt stage in out\n")
+            f.write("R1 in internal 1k\n")
+            f.write("C1 internal 0 10f\n")
+            f.write("R2 internal out 1k\n")
+            f.write(".ends\n")
+            f.write("V1 vdd 0 1.8\n")
+            f.write("X1 vdd out stage\n")
+            f.write("RL out 0 1k\n")
+            path = f.name
+
+        try:
+            nl = parse_netlist(path)
+            # Raw: V1, X1, RL = 3 devices
+            self.assertEqual(nl.num_devices, 3)
+            
+            flat = nl.flatten()
+            # Flattened: V1, X1.R1, X1.C1, X1.R2, RL = 5 devices
+            self.assertEqual(flat.num_devices, 5)
+            self.assertIn("X1.internal", [node for d in flat.devices for node in d.nodes])
+            
+            # Check integration through the pipeline
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config = SimulationConfig(
+                    netlist_path=path,
+                    partitions=1,
+                    tstop=100e-12,
+                    dt=10e-12,
+                    output_dir=tmpdir,
+                )
+                result = run_simulation(config)
+                self.assertTrue(result.success)
+                self.assertEqual(result.waveform.num_nodes, 3) # vdd, out, X1.internal
+        finally:
+            os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()

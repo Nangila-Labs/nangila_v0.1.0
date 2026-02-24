@@ -79,6 +79,9 @@ class NangilaDDPHook:
         warmup_steps: int = 100,
         num_layers: int = 1000,
         sync_mode: int = 2,  # SyncMode.PERIODIC
+        compressor_type: int = 0,
+        dgc_sparsity: float = 0.999,
+        power_sgd_rank: int = 1,
     ):
         """
         Initialize the Nangila DDP hook.
@@ -93,14 +96,31 @@ class NangilaDDPHook:
         self.sync_mode = sync_mode
         
         # Create Nangila hook
+        # Get CompressorType logic
+        try:
+             from .nangila import CompressorType
+             # Ensure valid type (default to PredictionResidual if not specified)
+             if isinstance(compressor_type, int):
+                 ctype_map = {0: CompressorType.PredictionResidual, 1: CompressorType.DGC, 2: CompressorType.PowerSGD}
+                 c_type = ctype_map.get(compressor_type, CompressorType.PredictionResidual)
+             else:
+                 c_type = compressor_type
+        except ImportError:
+             # Fallback if module not fully loaded (shouldn't happen)
+             c_type = 0
+             
         self.config = NangilaConfig(
             threshold=threshold,
             warmup_steps=warmup_steps,
+            compressor_type=c_type,
+            dgc_sparsity=dgc_sparsity,
+            power_sgd_rank=power_sgd_rank,
         )
         self.__name__ = "nangila_hook"
         self.__qualname__ = "nangila_hook"
         self.hook = NangilaHook.all_drivers(num_layers)
         self.layer_counter = 0
+        self.step_count = 0
         
         # Track compression stats
         self.total_original_bytes = 0
@@ -129,16 +149,27 @@ class NangilaDDPHook:
             
             # Warmup check (use standard all_reduce with AVG)
             if self.step_count < self.warmup_steps:
-                return dist.all_reduce(tensor, op=dist.ReduceOp.AVG, group=self.process_group, async_op=True).get_future()
+                # During warmup, use standard all-reduce
+                fut = dist.all_reduce(tensor, op=dist.ReduceOp.AVG, group=self.process_group, async_op=True).get_future()
+                # Wrap in a new future to ensure proper type for PyTorch 2.10
+                result_fut = torch.futures.Future()
+                
+                def _on_complete(fut_result):
+                    result_fut.set_result(tensor)
+                
+                fut.then(_on_complete)
+                return result_fut
             
             # === NANGILA GPU-NATIVE COMPRESSION ===
             
             # Check if we can use GPU-native path
             if tensor.is_cuda and hasattr(self.hook, 'compress_gpu'):
-                return self._compress_gpu_native(tensor, layer_id)
+                fut = self._compress_gpu_native(tensor, layer_id)
             else:
                 # Fallback to CPU path (slow but works)
-                return self._compress_cpu_fallback(tensor, layer_id)
+                fut = self._compress_cpu_fallback(tensor, layer_id)
+            
+            return fut
             
         except Exception as e:
             print(f"\nCRITICAL NANGILA DDP HOOK ERROR: {e}")
@@ -189,7 +220,6 @@ class NangilaDDPHook:
         tensor.copy_(averaged)
         
         # 7. Update Predictor with averaged gradient (async, non-blocking)
-        # Pass sync_mode for consistency (though update is typically async)
         self.hook.update_gpu(layer_id, averaged, sync_mode=self.sync_mode)
         
         # 8. Return completed future
@@ -264,6 +294,14 @@ class NangilaDDPHook:
         self.layer_counter = 0  # Reset layer counter each step
         self.hook.step()
         
+        # Report compression ratio every 10 steps
+        if self.step_count % 10 == 0 and self.step_count > self.warmup_steps:
+            ratio = self.compression_ratio
+            if dist.get_rank() == 0 and ratio > 1.0:
+                orig_mb = self.total_original_bytes / 1e6
+                comp_mb = self.total_compressed_bytes / 1e6
+                print(f"[Step {self.step_count}] Compression: {orig_mb:.1f} MB → {comp_mb:.1f} MB ({ratio:.1f}×)")
+        
         # Auto predictor hash verification every 100 steps
         if self.step_count % 100 == 0 and self.step_count > 0:
             self._verify_predictor_hash()
@@ -322,6 +360,9 @@ def register_nangila_hook(
     warmup_steps: int = 100,
     prefer_cpp: bool = True,
     sync_mode: int = 2,  # SyncMode.PERIODIC
+    compressor_type: int = 0, # CompressorType.PredictionResidual
+    dgc_sparsity: float = 0.999,
+    power_sgd_rank: int = 1,
 ) -> "NangilaDDPHook":
     """
     Register Nangila compression hook with a DDP model.
@@ -338,6 +379,9 @@ def register_nangila_hook(
             - SyncMode.ASYNC (0): No sync, maximum performance (production)
             - SyncMode.ALWAYS (1): Always sync, catch all errors (debug)
             - SyncMode.PERIODIC (2): Sync every 100 calls (default, balanced)
+        compressor_type: CompressorType (0=PredictionResidual, 1=DGC, 2=PowerSGD)
+        dgc_sparsity: Sparsity for DGC compressor (default 0.999)
+        power_sgd_rank: Rank for PowerSGD compressor (default 1)
     
     Returns:
         Hook instance (call .step() after each optimizer step)
@@ -368,13 +412,14 @@ def register_nangila_hook(
     # Estimate number of layers from model parameters
     num_layers = len(list(ddp_model.parameters()))
     
-    # Try C++ hook first for better performance
+    # Try C++ hook first for better performance (and stability)
     if prefer_cpp and CPP_HOOK_AVAILABLE:
         try:
-            hook = NangilaCppHook(num_layers=num_layers, warmup_steps=warmup_steps)
+            # NangilaCppHook signature: (num_layers, warmup_steps)
+            hook = NangilaCppHook(num_layers, warmup_steps)
             ddp_model.register_comm_hook(state=None, hook=hook)
             if dist.get_rank() == 0:
-                print("Using native C++ DDP hook (high performance)")
+                print("Using native C++ DDP hook (NangilaCppHook)")
             return hook
         except Exception as e:
             if dist.get_rank() == 0:
@@ -387,6 +432,9 @@ def register_nangila_hook(
         warmup_steps=warmup_steps,
         num_layers=num_layers,
         sync_mode=sync_mode,
+        compressor_type=compressor_type,
+        dgc_sparsity=dgc_sparsity,
+        power_sgd_rank=power_sgd_rank,
     )
     
     # Register as communication hook

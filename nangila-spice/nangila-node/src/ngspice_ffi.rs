@@ -19,13 +19,14 @@
 //!   2. Only supports R, C, V, I elements (no MOSFET models)
 //!   3. Sufficient for validating the partitioning/prediction framework
 
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::mna::{Element, MnaSystem};
 use crate::solver::PartitionState;
 
 /// Backend solver selection.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SolverBackend {
     /// Use ngspice shared library (full device model support)
     Ngspice,
@@ -34,7 +35,7 @@ pub enum SolverBackend {
 }
 
 /// A parsed partition sub-netlist ready for simulation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartitionNetlist {
     /// Human-readable name
     pub name: String,
@@ -42,8 +43,8 @@ pub struct PartitionNetlist {
     pub num_nodes: usize,
     /// Circuit elements for MNA stamping
     pub elements: Vec<Element>,
-    /// Mapping: ghost_net_id → local_node_index
-    pub ghost_map: Vec<(u64, usize)>,
+    /// Mapping: ghost_net_id → (local_node_index, owner_partition_id)
+    pub ghost_map: Vec<(u64, usize, u32)>,
 }
 
 /// The solver engine that wraps either ngspice or the built-in solver.
@@ -133,8 +134,8 @@ impl SolverEngine {
         let mut elements = self.netlist.elements.clone();
         for (net_id, voltage) in ghost_voltages {
             // Find the local node for this ghost
-            if let Some((_gid, local_node)) =
-                self.netlist.ghost_map.iter().find(|(gid, _)| gid == net_id)
+            if let Some((_gid, local_node, _owner)) =
+                self.netlist.ghost_map.iter().find(|(gid, _, _)| gid == net_id)
             {
                 // Add/update ghost source
                 elements.push(Element::GhostSource {
@@ -187,6 +188,14 @@ impl SolverEngine {
     /// Get the current backend.
     pub fn backend(&self) -> SolverBackend {
         self.backend
+    }
+
+    /// Get the MNA system size (number of unknowns).
+    pub fn size(&self) -> usize {
+        match self.backend {
+            SolverBackend::BuiltIn => self.mna.as_ref().map(|m| m.size).unwrap_or(0),
+            SolverBackend::Ngspice => self.netlist.num_nodes, // Approximation for ngspice
+        }
     }
 }
 
@@ -268,7 +277,7 @@ mod tests {
                     r: 1000.0,
                 },
             ],
-            ghost_map: vec![(100, 1)], // net_id=100 maps to local node 1
+            ghost_map: vec![(100, 1, 0)], // net_id=100 maps to local node 1, owner=0
         };
 
         let mut engine = SolverEngine::with_backend(netlist, SolverBackend::BuiltIn);

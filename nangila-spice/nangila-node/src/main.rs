@@ -12,7 +12,9 @@ use nangila_node::comm::CommLayer;
 use nangila_node::ghost::GhostBuffer;
 use nangila_node::mna::Element;
 use nangila_node::ngspice_ffi::PartitionNetlist;
+use nangila_node::parser::SpiceParser;
 use nangila_node::solver::{SimConfig, TransientSolver};
+
 
 /// Nangila SPICE Solver Node
 #[derive(Parser, Debug)]
@@ -63,12 +65,30 @@ fn main() {
 
     if args.demo {
         run_demo(args);
-    } else if let Some(partition_path) = &args.partition {
-        info!("Loading partition from: {}", partition_path);
-        // TODO: Load partition netlist from JSON file
-        info!("Partition loading not yet implemented. Use --demo for a test run.");
+    } else if let Some(partition_path) = args.partition.clone() {
+        let netlist_res = if partition_path.ends_with(".json") {
+            info!("Loading partition config from JSON: {}", partition_path);
+            std::fs::File::open(&partition_path)
+                .map_err(|e| e.to_string())
+                .and_then(|file| serde_json::from_reader(file).map_err(|e| e.to_string()))
+        } else {
+            info!("Parsing SPICE netlist from: {}", partition_path);
+            SpiceParser::parse_file(&partition_path).map_err(|e| e.to_string())
+        };
+
+        match netlist_res {
+            Ok(netlist) => {
+                info!("Loaded netlist '{}': {} nodes, {} elements",
+                    netlist.name, netlist.num_nodes, netlist.elements.len());
+                run_from_netlist(netlist, args);
+            }
+            Err(e) => {
+                eprintln!("ERROR: Failed to load netlist '{}': {}", partition_path, e);
+                std::process::exit(1);
+            }
+        }
     } else {
-        info!("No partition specified. Use --partition <path> or --demo for a test run.");
+        info!("No partition specified. Use --partition <path.sp> or --demo for a test run.");
     }
 }
 
@@ -106,7 +126,11 @@ fn run_demo(args: Args) {
         ghost_map: vec![],
     };
 
-    let ghosts = GhostBuffer::new();
+    let mut ghosts = GhostBuffer::new();
+    for (net_id, _local_node, owner) in &netlist.ghost_map {
+        ghosts.add_ghost(nangila_node::ghost::GhostNode::new(*net_id, *owner));
+    }
+
     let comm = CommLayer::new(args.node_id, args.total_partitions);
     let config = SimConfig {
         tstop: args.tstop,
@@ -145,6 +169,58 @@ fn run_demo(args: Args) {
         for &i in &indices {
             let (t, ref v) = wf[i];
             info!("  t={:.2e}s  V(cap)={:.6}V", t, v[1]);
+        }
+    }
+
+    info!("Nangila-Node {} finished.", args.node_id);
+}
+
+/// Run the transient solver on a parsed SPICE netlist.
+fn run_from_netlist(netlist: PartitionNetlist, args: Args) {
+    info!(
+        "Running solver on netlist '{}': {} nodes, {} elements",
+        netlist.name,
+        netlist.num_nodes,
+        netlist.elements.len()
+    );
+
+    let mut ghosts = GhostBuffer::new();
+    for (net_id, _local_node, owner) in &netlist.ghost_map {
+        ghosts.add_ghost(nangila_node::ghost::GhostNode::new(*net_id, *owner));
+    }
+
+    let comm = CommLayer::new(args.node_id, args.total_partitions);
+    let config = SimConfig {
+        tstop: args.tstop,
+        dt: args.dt,
+        reltol: args.reltol,
+        predict_depth: args.predict_depth,
+        max_history: 100,
+    };
+
+    let mut solver = TransientSolver::new(netlist, ghosts, comm, config);
+    let (final_state, stats) = solver.run();
+
+    info!("=== Simulation Results ===");
+    info!("Final node voltages:");
+    for (i, v) in final_state.voltages.iter().enumerate() {
+        info!("  V(node {}) = {:.6}V", i + 1, v);
+    }
+    info!("Timesteps: {}", stats.total_steps);
+    info!("Wall time:  {:.3}s", stats.wall_time_secs);
+    info!("Prediction hit rate: {:.1}%", stats.hit_rate() * 100.0);
+    info!("Rollbacks: {}", stats.rollbacks);
+
+    // Print a few waveform samples from the first internal node (if any)
+    let wf = &solver.waveform;
+    if wf.len() >= 5 {
+        info!("=== Waveform Samples (node 1) ===");
+        let indices = [0, wf.len() / 4, wf.len() / 2, 3 * wf.len() / 4, wf.len() - 1];
+        for &i in &indices {
+            let (t, ref v) = wf[i];
+            if !v.is_empty() {
+                info!("  t={:.2e}s  V(1)={:.6}V", t, v[0]);
+            }
         }
     }
 

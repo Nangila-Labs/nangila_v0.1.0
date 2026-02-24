@@ -19,6 +19,22 @@ pub enum ConfigError {
 
     #[error("promotion_threshold must be positive, got {0}")]
     InvalidPromotionThreshold(f32),
+
+    #[error("dgc_sparsity must be in range [0.0, 1.0], got {0}")]
+    InvalidSparsity(f32),
+
+    #[error("power_sgd_rank must be positive, got {0}")]
+    InvalidRank(usize),
+}
+
+/// Type of compressor to use
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompressorType {
+    #[default]
+    PredictionResidual,
+    DGC,
+    PowerSGD,
+    // Placeholders for future codecs
 }
 
 /// Main configuration for Nangila compression
@@ -52,6 +68,15 @@ pub struct NangilaConfig {
 
     /// Error threshold for promoting Passenger to Driver
     pub promotion_threshold: f32,
+
+    /// Type of compressor to use
+    pub compressor_type: CompressorType,
+
+    /// DGC: Sparsity ratio (e.g. 0.999 means keep top 0.1%)
+    pub dgc_sparsity: f32,
+
+    /// PowerSGD: Rank for matrix factorization (e.g. 1 or 2)
+    pub power_sgd_rank: usize,
 }
 
 impl Default for NangilaConfig {
@@ -66,6 +91,9 @@ impl Default for NangilaConfig {
             monitor_interval: 1000,
             monitor_sample_fraction: 0.10,
             promotion_threshold: 0.15,
+            compressor_type: CompressorType::default(),
+            dgc_sparsity: 0.999,
+            power_sgd_rank: 1,
         }
     }
 }
@@ -100,6 +128,9 @@ impl NangilaConfig {
             monitor_interval: 1000,
             monitor_sample_fraction: 0.10,
             promotion_threshold: 0.15,
+            compressor_type: CompressorType::default(),
+            dgc_sparsity: 0.999,
+            power_sgd_rank: 1,
         })
     }
 
@@ -108,6 +139,8 @@ impl NangilaConfig {
         Self {
             sculptor_threshold: 0.97,
             monitor_interval: 500,
+            dgc_sparsity: 0.99,
+            power_sgd_rank: 2,
             ..Default::default()
         }
     }
@@ -117,6 +150,8 @@ impl NangilaConfig {
         Self {
             sculptor_threshold: 0.90,
             monitor_interval: 1000,
+            dgc_sparsity: 0.999,
+            power_sgd_rank: 1,
             ..Default::default()
         }
     }
@@ -141,6 +176,12 @@ impl NangilaConfig {
             return Err(ConfigError::InvalidPromotionThreshold(
                 self.promotion_threshold,
             ));
+        }
+        if !(0.0..=1.0).contains(&self.dgc_sparsity) {
+            return Err(ConfigError::InvalidSparsity(self.dgc_sparsity));
+        }
+        if self.power_sgd_rank == 0 {
+            return Err(ConfigError::InvalidRank(self.power_sgd_rank));
         }
         Ok(())
     }

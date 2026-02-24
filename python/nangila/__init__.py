@@ -10,7 +10,10 @@ from .nangila import (
     NangilaConfig,
     NangilaHook,
     Sculptor,
+    NangilaHook,
+    Sculptor,
     SyncMode,
+    CompressorType,
     cuda_available,
     __version__,
 )
@@ -29,7 +32,13 @@ except ImportError:
         raise RuntimeError("CUDA not compiled. Rebuild with CUDA support.")
 
 # PyTorch DDP integration
-from .ddp import NangilaDDPHook, register_nangila_hook
+from .ddp import NangilaDDPHook, register_nangila_hook, CPP_HOOK_AVAILABLE
+
+# Try to import native C++ hook
+try:
+    from nangila_ddp_cpp import NangilaDDPHook as NangilaCppHook
+except ImportError:
+    NangilaCppHook = None
 
 # PyTorch FSDP integration
 from .fsdp import NangilaFSDPState, nangila_fsdp_hook
@@ -38,13 +47,17 @@ __all__ = [
     "NangilaConfig",
     "NangilaHook", 
     "Sculptor",
+    "Sculptor",
     "SyncMode",
+    "CompressorType",
     "cuda_available",
     "cuda_predict_and_quantize",
     "cuda_dequantize_and_reconstruct",
     "__version__",
     # DDP integration
     "NangilaDDPHook",
+    "NangilaCppHook",
+    "CPP_HOOK_AVAILABLE",
     "register_nangila_hook",
     # FSDP integration
     "NangilaFSDPState",

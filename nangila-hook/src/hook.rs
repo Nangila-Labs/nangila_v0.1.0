@@ -9,9 +9,8 @@
 //! - Desync detection and FORCE_SYNC recovery
 
 use nangila_core::{
-    compute_crc32, verify_crc32, CompressedTensor, CompressionResult, GradientHistory, LayerId,
-    NangilaConfig, NangilaState, Packet, PacketHeader, SafeModeAction, SafeModeConfig, Tensor,
-    TopologyMask,
+    CompressedTensor, CompressionResult, GradientHistory, LayerId, NangilaConfig, NangilaState,
+    Packet, PacketHeader, SafeModeAction, SafeModeConfig, Tensor, TopologyMask,
 };
 
 #[cfg(feature = "cuda")]
@@ -322,7 +321,7 @@ impl NangilaHook {
 
     /// Get predictor state hash for verification
     pub fn predictor_hash(&self) -> u64 {
-        self.state.predictor().state_hash()
+        self.state.predictor_hash()
     }
 
     /// Check if it's time to verify predictor hash (call each step)
@@ -590,9 +589,8 @@ impl NangilaHook {
         let gradient = self.deserialize_tensor_payload(&packet.payload);
 
         // Reset predictor state for this layer with the synced gradient
-        self.state
-            .predictor_mut()
-            .force_sync_layer(layer_id, &gradient);
+        // Reset predictor state for this layer with the synced gradient
+        let _ = self.state.force_sync_layer(layer_id, &gradient);
 
         // Clear recovery mode
         self.recovery_mode.insert(layer_id, RecoveryMode::Normal);

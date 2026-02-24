@@ -16,10 +16,10 @@ thiserror.workspace = true
 tracing.workspace = true
 
 # Python bindings (optional, for Python module)
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"], optional = true }
 numpy = { version = "0.22", optional = true }
 
 [features]
 default = []
 python = ["pyo3", "numpy"]
-cuda = ["nangila-cuda"]
+cuda = ["nangila-cuda/cuda"]

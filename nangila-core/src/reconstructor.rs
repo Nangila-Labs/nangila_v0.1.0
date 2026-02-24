@@ -59,6 +59,12 @@ impl Reconstructor {
         Ok(gradient)
     }
 
+    /// Cache a reconstructed driver gradient (e.g. from an external compressor)
+    pub fn cache_driver_gradient(&mut self, layer_id: LayerId, gradient: Tensor) {
+        self.driver_cache.insert(layer_id, gradient);
+        self.last_reconstruction_step = Some(self.current_step);
+    }
+
     /// Reconstruct a partial Driver layer gradient
     pub fn reconstruct_driver_partial(
         &mut self,

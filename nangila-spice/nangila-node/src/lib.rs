@@ -13,3 +13,4 @@ pub mod nz;
 pub mod predictor;
 pub mod pvt;
 pub mod solver;
+pub mod parser;

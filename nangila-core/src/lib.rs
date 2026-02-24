@@ -21,6 +21,8 @@
 //! - [`Reconstructor`]: Receiver-side gradient reconstruction
 //! - [`NangilaState`]: Main state container for compression/decompression
 
+use serde::{Deserialize, Serialize};
+
 pub mod config;
 pub mod dtype;
 pub mod mask;
@@ -29,6 +31,12 @@ pub mod quantizer;
 pub mod reconstructor;
 pub mod sculptor;
 pub mod state;
+pub mod compressor;
+pub mod dgc;
+pub mod power_sgd;
+
+#[cfg(test)]
+mod compressor_tests;
 
 // Phase 1: Production hardening modules
 pub mod checkpoint;
@@ -48,6 +56,8 @@ pub use predictor::Predictor;
 pub use quantizer::{CompressedTensor, Quantizer};
 pub use reconstructor::Reconstructor;
 pub use sculptor::Sculptor;
+pub use compressor::{Compressor, PipelineCompressor, PredictionResidualCompressor};
+pub use power_sgd::{PowerSGDCompressor, PowerSGDPacket};
 pub use state::{
     CompressionResult, CompressionStats, LayerTelemetry, NangilaState, SummaryTelemetry,
 };
@@ -71,7 +81,7 @@ pub use dtype::{bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16};
 pub type LayerId = u32;
 
 /// Supported data types for gradients
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum DataType {
     #[default]
@@ -103,7 +113,7 @@ impl DataType {
 
 /// Simple tensor representation for the core library.
 /// Data is always stored as FP32 internally; dtype tracks the original format.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tensor {
     /// Internal FP32 data (converted from original dtype)
     pub data: Vec<f32>,
@@ -235,6 +245,9 @@ pub enum NangilaError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] bincode::Error),
 }
 
 pub type Result<T> = std::result::Result<T, NangilaError>;

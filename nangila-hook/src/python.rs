@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use nangila_core::{NangilaConfig, Sculptor as RustSculptor, Tensor, TopologyMask};
+use nangila_core::config::CompressorType;
 
 use crate::hook::NangilaHook as RustHook;
 
@@ -95,6 +96,35 @@ impl PySyncMode {
     }
 }
 
+/// Python-exposed Compressor Type
+#[pyclass(name = "CompressorType", eq, eq_int)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PyCompressorType {
+    PredictionResidual = 0,
+    DGC = 1,
+    PowerSGD = 2,
+}
+
+impl From<PyCompressorType> for CompressorType {
+    fn from(t: PyCompressorType) -> Self {
+        match t {
+            PyCompressorType::PredictionResidual => CompressorType::PredictionResidual,
+            PyCompressorType::DGC => CompressorType::DGC,
+            PyCompressorType::PowerSGD => CompressorType::PowerSGD,
+        }
+    }
+}
+
+impl From<CompressorType> for PyCompressorType {
+    fn from(t: CompressorType) -> Self {
+        match t {
+            CompressorType::PredictionResidual => PyCompressorType::PredictionResidual,
+            CompressorType::DGC => PyCompressorType::DGC,
+            CompressorType::PowerSGD => PyCompressorType::PowerSGD,
+        }
+    }
+}
+
 /// Python-exposed Nangila configuration
 #[pyclass(name = "NangilaConfig")]
 #[derive(Clone)]
@@ -111,6 +141,9 @@ impl PyNangilaConfig {
         warmup_steps = 1000,
         shadow_run_steps = 100,
         quantize_bits = 4,
+        compressor_type = PyCompressorType::PredictionResidual,
+        dgc_sparsity = 0.999,
+        power_sgd_rank = 1,
     ))]
     fn new(
         momentum: f32,
@@ -118,6 +151,9 @@ impl PyNangilaConfig {
         warmup_steps: usize,
         shadow_run_steps: usize,
         quantize_bits: u8,
+        compressor_type: PyCompressorType,
+        dgc_sparsity: f32,
+        power_sgd_rank: usize,
     ) -> Self {
         Self {
             inner: NangilaConfig {
@@ -130,6 +166,13 @@ impl PyNangilaConfig {
                 monitor_interval: 1000,
                 monitor_sample_fraction: 0.10,
                 promotion_threshold: 0.15,
+                compressor_type: match compressor_type {
+                    PyCompressorType::PredictionResidual => CompressorType::PredictionResidual,
+                    PyCompressorType::DGC => CompressorType::DGC,
+                    PyCompressorType::PowerSGD => CompressorType::PowerSGD,
+                },
+                dgc_sparsity,
+                power_sgd_rank,
             },
         }
     }
@@ -291,7 +334,7 @@ impl PyNangilaHook {
 
         // Call GPU-native compression
         unsafe {
-            let output_ptr = self
+            let _output_ptr = self
                 .inner
                 .on_send_gpu(layer_id, data_ptr as *const f32, numel, stream)
                 .map_err(|e| {
@@ -590,6 +633,17 @@ unsafe fn cuda_predict_and_quantize(
     }
     #[cfg(not(feature = "cuda"))]
     {
+        let _ = gradient_ptr;
+        let _ = g_current_ptr;
+        let _ = g_previous_ptr;
+        let _ = momentum;
+        let _ = gamma;
+        let _ = output_ptr;
+        let _ = n;
+        let _ = stream_ptr;
+        let _ = sync_mode;
+        let _ = step;
+        let _ = layer_id;
         Err(pyo3::exceptions::PyRuntimeError::new_err(
             "CUDA not compiled. Rebuild with --features cuda",
         ))
@@ -667,6 +721,15 @@ unsafe fn cuda_dequantize_and_reconstruct(
     }
     #[cfg(not(feature = "cuda"))]
     {
+        let _ = packed_ptr;
+        let _ = g_current_ptr;
+        let _ = g_previous_ptr;
+        let _ = momentum;
+        let _ = gamma;
+        let _ = output_ptr;
+        let _ = n;
+        let _ = stream_ptr;
+        let _ = sync_mode;
         Err(pyo3::exceptions::PyRuntimeError::new_err(
             "CUDA not compiled. Rebuild with --features cuda",
         ))
@@ -680,6 +743,7 @@ fn nangila(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySculptor>()?;
     m.add_class::<PyNangilaHook>()?;
     m.add_class::<PySyncMode>()?;
+    m.add_class::<PyCompressorType>()?;
     m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_predict_and_quantize, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_dequantize_and_reconstruct, m)?)?;
