@@ -2,11 +2,11 @@
 
 Nangila SPICE is an open-build transient circuit simulator under active development.
 
-The current milestone is Phase 1: an oracle-validated correctness baseline for a constrained SPICE transient subset.
+This public snapshot is a correctness-first release: an oracle-validated baseline for a constrained SPICE transient subset.
 
 ## Status
 
-- Phase 1 is complete as a correctness milestone, not a performance milestone.
+- This is a correctness-first release, not a performance release.
 - The single-node Rust solver is the current validated path.
 - Partitioned mode is still experimental and not part of the production claim.
 - The supported scope is a constrained SPICE transient subset focused on digital-heavy and near-digital circuits.
@@ -14,9 +14,9 @@ The current milestone is Phase 1: an oracle-validated correctness baseline for a
 Start here:
 
 - v1 scope and contract: [docs/v1-simulator-contract.md](/Users/craigchirara/nangila/nangila-spice/docs/v1-simulator-contract.md)
-- Phase 1 plan: [docs/phase-1-implementation-plan.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-implementation-plan.md)
-- Phase 1 benchmark report: [docs/phase-1-benchmark-report.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-benchmark-report.md)
-- Phase 1 summary note: [docs/phase-1-summary-note.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-summary-note.md)
+- implementation plan: [docs/phase-1-implementation-plan.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-implementation-plan.md)
+- correctness-first benchmark report: [docs/correctness-first-benchmark-report.md](/Users/craigchirara/nangila/nangila-spice/docs/correctness-first-benchmark-report.md)
+- correctness-first release note: [docs/correctness-first-release-note.md](/Users/craigchirara/nangila/nangila-spice/docs/correctness-first-release-note.md)
 
 ## What It Is
 
@@ -35,18 +35,18 @@ Nangila v1 is not yet:
 - broadly compatible with external `.include` and `.lib` ecosystems
 - a validated distributed simulator
 - a validated GPU-accelerated production path
-- faster than `ngspice` on the published Phase 1 benchmark suite
+- faster than `ngspice` on the published correctness benchmark suite
 
 ## Validation
 
-The published Phase 1 correctness program has two tiers:
+The published correctness program has two tiers:
 
 - mandatory per-change gate:
   `simple_rc`, `inverter`, `sram_6t`, `c17_full`, `c17_synth`, `c17_auto`, `c432_auto`, `s27_auto`, `s382_auto`, `s641_auto`
 - extended validation gate:
   `c880_auto`, `c1355_auto`, `c1908_auto`
 
-All `13/13` official Phase 1 cases currently pass the v1 correctness contract against `ngspice`.
+All `13/13` official cases currently pass the v1 correctness contract against `ngspice`.
 
 Important limitation:
 
@@ -60,7 +60,7 @@ If you want to test the project quickly, use this path:
 1. install the package and `ngspice`
 2. build `nangila-node`
 3. run one single-node reference circuit
-4. run the Phase 1 benchmark report
+4. run the correctness-first benchmark report
 
 Recommended first commands:
 
@@ -82,7 +82,7 @@ python3 -m pip install .
 
 ### 2. Install `ngspice`
 
-You need a working `ngspice` binary on your `PATH` for the oracle-backed correctness harness and the Phase 1 benchmark report.
+You need a working `ngspice` binary on your `PATH` for the oracle-backed correctness harness and the correctness-first benchmark report.
 
 On macOS with Homebrew:
 
@@ -117,9 +117,9 @@ nangila run benchmarks/reference_circuits/inverter.sp --partitions 1 --tstop 2e-
 
 If you request partitioning, the CLI will surface the validation state explicitly.
 
-## Reproducing the Phase 1 Benchmark Report
+## Reproducing the Correctness-First Benchmark Report
 
-This command reproduces the published Phase 1 benchmark report locally:
+This command reproduces the published correctness-first benchmark report locally:
 
 ```bash
 nangila phase1-report --include-extended
@@ -130,7 +130,7 @@ It writes:
 - `artifacts/phase1_benchmark_report.json`
 - `artifacts/phase1_benchmark_report.md`
 
-That command runs the official Phase 1 correctness harness against `ngspice`, measures waveform error metrics, and records runtime for both the mandatory and extended validation gates.
+That command runs the official correctness harness against `ngspice`, measures waveform error metrics, and records runtime for both the mandatory and extended validation gates.
 
 If you only want the required per-change gate, omit `--include-extended`.
 
@@ -200,9 +200,9 @@ What is still in progress:
 
 ## Current Roadmap
 
-The project has completed Phase 1 and is moving into Phase 2.
+Publicly, this repository should be read as a correctness-first release. Internally, the project has completed Phase 1 and is moving into Phase 2.
 
-- Phase 1 complete:
+- correctness-first release delivered:
   oracle-backed correctness validation against `ngspice`
 - Phase 2 next:
   harden the single-node production path and remove remaining placeholder behavior from production-facing execution

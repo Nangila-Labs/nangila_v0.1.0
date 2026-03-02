@@ -187,7 +187,7 @@ def render_markdown_report(report: dict) -> str:
     total_cases = mandatory["case_count"] + extended["case_count"]
     total_passes = mandatory["pass_count"] + extended["pass_count"]
     lines = [
-        "# Phase 1 Benchmark Report",
+        "# Correctness-First Benchmark Report",
         "",
         "This report was generated from the Nangila Phase 1 correctness harness.",
         "",

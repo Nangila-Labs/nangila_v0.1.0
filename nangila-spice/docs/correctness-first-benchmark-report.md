@@ -1,10 +1,10 @@
-# Phase 1 Benchmark Report
+# Correctness-First Benchmark Report
 
 ## Purpose
 
-This report summarizes the measured results of Nangila's Phase 1 correctness program against `ngspice`.
+This report summarizes the measured results of Nangila's correctness program against `ngspice`.
 
-Phase 1 is a correctness milestone, not a performance milestone. The data below is intended to show:
+This report serves as the benchmark record for Nangila's correctness-first release. The data below is intended to show:
 
 - pass/fail status against the v1 contract
 - waveform error metrics versus `ngspice`
@@ -22,11 +22,11 @@ Phase 1 is a correctness milestone, not a performance milestone. The data below 
 
 ## Headline Result
 
-All official Phase 1 correctness cases passed the v1 contract against `ngspice`.
+All official correctness cases for this release passed the v1 contract against `ngspice`.
 
 - Mandatory gate: `10 / 10` passed
 - Extended gate: `3 / 3` passed
-- Total official Phase 1 validation cases: `13 / 13` passed
+- Total official validation cases: `13 / 13` passed
 
 ## Mandatory Gate
 
@@ -50,7 +50,7 @@ Mandatory-gate aggregate runtime:
 
 ## Extended Gate
 
-These cases are official Phase 1 validation cases, but they remain extended-only because they exceed the per-change CI budget.
+These cases are official validation cases, but they remain extended-only because they exceed the per-change CI budget.
 
 | Case | Pass | Nangila Runtime (s) | ngspice Runtime (s) | Max Error (V) | RMS Error (V) | Final Error (V) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -65,26 +65,26 @@ Extended-gate aggregate runtime:
 
 ## What This Means
 
-Phase 1 establishes that Nangila can now be validated honestly against `ngspice` on its defined v1 subset.
+This release establishes that Nangila can now be validated honestly against `ngspice` on its defined v1 subset.
 
 The benchmark data supports these claims:
 
-- the single-node solver passes the official Phase 1 correctness suite
+- the single-node solver passes the official correctness suite
 - the project no longer depends on false-green integration behavior to claim success
 - larger synthesized decks can be checked reproducibly, even when they are too expensive for the per-change gate
 
 The data does not support a performance claim yet.
 
-On this local Phase 1 run, Nangila is slower than `ngspice` across both the mandatory and extended suites. That is acceptable at this stage because Phase 1 was scoped around correctness infrastructure, not sparse optimization or acceleration.
+On this local release run, Nangila is slower than `ngspice` across both the mandatory and extended suites. That is acceptable at this stage because this release was scoped around correctness infrastructure, not sparse optimization or acceleration.
 
 ## Publishable Framing
 
 The defensible public statement is:
 
-`Nangila completed Phase 1 correctness validation for its v1 transient subset, with oracle-backed agreement against ngspice across a documented mandatory and extended benchmark suite.`
+`Nangila is shipping a correctness-first release for its v1 transient subset, with oracle-backed agreement against ngspice across a documented mandatory and extended benchmark suite.`
 
 The wrong public statement would be:
 
 `Nangila is already faster than ngspice.`
 
-That is not what the Phase 1 data shows.
+That is not what the current release data shows.

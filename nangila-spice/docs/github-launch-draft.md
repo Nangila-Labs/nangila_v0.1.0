@@ -14,7 +14,7 @@ Open-build transient simulator with ngspice-backed correctness validation for a 
 
 ## Pinned Project Blurb
 
-Nangila is an in-progress transient circuit simulator with an oracle-validated Phase 1 baseline. The current public claim is correctness on a narrow SPICE subset, not broad compatibility or speed leadership.
+Nangila is an in-progress transient circuit simulator in a correctness-first release state. The current public claim is correctness on a narrow SPICE subset, not broad compatibility or speed leadership.
 
 ## Suggested Topics
 
@@ -29,7 +29,7 @@ Nangila is an in-progress transient circuit simulator with an oracle-validated P
 
 ## Initial Release Title
 
-`v0.2.0: Phase 1 correctness baseline`
+`v0.2.0: correctness-first release`
 
 ## Recommended Tag
 
@@ -40,13 +40,13 @@ Use this tag for the first public GitHub release once the Phase 1 baseline is co
 Suggested commands after committing the release state:
 
 ```bash
-git tag -a v0.2.0 -m "Phase 1 correctness baseline"
+git tag -a v0.2.0 -m "correctness-first release"
 git push origin v0.2.0
 ```
 
 ## Initial Release Notes
 
-This release marks Nangila's Phase 1 milestone.
+This release marks Nangila's first correctness-first public release.
 
 What is new in this release:
 
@@ -54,7 +54,7 @@ What is new in this release:
 - an `ngspice`-backed correctness harness
 - contract-level waveform comparison against the official benchmark suite
 - a documented split between mandatory and extended correctness gates
-- a reproducible Phase 1 benchmark report
+- a reproducible correctness-first benchmark report
 - explicit experimental status for partitioned execution
 - install smoke coverage and cleaner public-facing CLI behavior
 
@@ -84,7 +84,7 @@ nangila phase1-report
 Key docs:
 
 - [docs/v1-simulator-contract.md](/Users/craigchirara/nangila/nangila-spice/docs/v1-simulator-contract.md)
-- [docs/phase-1-benchmark-report.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-benchmark-report.md)
+- [docs/correctness-first-benchmark-report.md](/Users/craigchirara/nangila/nangila-spice/docs/correctness-first-benchmark-report.md)
 - [docs/production-roadmap.md](/Users/craigchirara/nangila/nangila-spice/docs/production-roadmap.md)
 
 ## Launch Post Draft
@@ -93,7 +93,7 @@ I just open-sourced Nangila SPICE.
 
 Nangila is an open-build transient simulator focused on a constrained SPICE subset for digital-heavy and near-digital circuits.
 
-The project is not launching as a “faster than ngspice” claim. The current milestone is a correctness one: Phase 1 is complete, with oracle-backed waveform validation against `ngspice` across a documented benchmark suite.
+The project is not launching as a “faster than ngspice” claim. This is a correctness-first release, with oracle-backed waveform validation against `ngspice` across a documented benchmark suite.
 
 Current state:
 
@@ -102,8 +102,8 @@ Current state:
 - the v1 scope is narrow and explicit
 - benchmark reproduction is built into the repo
 
-If you want to evaluate it, the best place to start is the README and the Phase 1 benchmark report.
+If you want to evaluate it, the best place to start is the README and the benchmark report.
 
 ## Notes
 
-I did not create the git tag in the current workspace state. A release tag should point at a clean committed snapshot of the Phase 1 baseline, not at an uncommitted working tree.
+I did not create the git tag in the current workspace state. A release tag should point at a clean committed snapshot of the correctness-first release, not at an uncommitted working tree.
