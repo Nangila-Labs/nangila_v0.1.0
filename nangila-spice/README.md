@@ -13,10 +13,10 @@ This public snapshot is a correctness-first release: an oracle-validated baselin
 
 Start here:
 
-- v1 scope and contract: [docs/v1-simulator-contract.md](/Users/craigchirara/nangila/nangila-spice/docs/v1-simulator-contract.md)
-- implementation plan: [docs/phase-1-implementation-plan.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-implementation-plan.md)
-- correctness-first benchmark report: [docs/correctness-first-benchmark-report.md](/Users/craigchirara/nangila/nangila-spice/docs/correctness-first-benchmark-report.md)
-- correctness-first release note: [docs/correctness-first-release-note.md](/Users/craigchirara/nangila/nangila-spice/docs/correctness-first-release-note.md)
+- v1 scope and contract: [docs/v1-simulator-contract.md](docs/v1-simulator-contract.md)
+- implementation plan: [docs/phase-1-implementation-plan.md](docs/phase-1-implementation-plan.md)
+- correctness-first benchmark report: [docs/correctness-first-benchmark-report.md](docs/correctness-first-benchmark-report.md)
+- correctness-first release note: [docs/correctness-first-release-note.md](docs/correctness-first-release-note.md)
 
 ## What It Is
 
@@ -141,6 +141,7 @@ What outside users should expect today:
 - `ngspice` is required for the benchmark report and oracle-backed correctness harness
 - the validated path is single-node CPU execution
 - partitioned mode is explicitly experimental and currently falls back to the validated single-node waveform by default
+- the PVT orchestration path is experimental unless it is using the real `nangila-node` solver output
 - the supported SPICE subset is intentionally narrow
 - broad `.include` and `.lib` compatibility is not a v1 claim
 - GPU support is not yet a validated production path
@@ -200,23 +201,23 @@ What is still in progress:
 
 ## Current Roadmap
 
-Publicly, this repository should be read as a correctness-first release. Internally, the project has completed Phase 1 and is moving into Phase 2.
+This roadmap is aligned to the whitepaper phase language. Publicly, the current repo should still be read as a correctness-first release. Internally, that correctness-first release is the completed validation slice of the whitepaper's broader Phase 1.
 
-- correctness-first release delivered:
-  oracle-backed correctness validation against `ngspice`
-- Phase 2 next:
-  harden the single-node production path and remove remaining placeholder behavior from production-facing execution
-- Phase 3 after that:
-  replace dense internals with sparse-first solver infrastructure
-- Later phases:
-  real partition equivalence, measured PVT, and validated GPU acceleration
+- Phase 1: MVP Core Functional
+  partially delivered in this repo snapshot: Rust parsing, MNA construction, transient solving, and oracle-backed validation against `ngspice` for the supported transient subset are in place; the broader whitepaper Phase 1 performance and scale claims are not yet delivered here
+- Phase 2: GPU Factorization In-Flight
+  in progress: sparse-first matrix infrastructure, iterative linear solves, and the path toward a validated GPU-backed factorization/solve flow
+- Phase 3: Orchestration and Scale-Out
+  next after the sparse/GPU base is credible: real partition equivalence, measured PVT workflows, and broader high-throughput orchestration
+- Later milestones:
+  device-model abstraction beyond the current simple subset, stronger compatibility, and performance work needed to compete with established tools on the supported workload class
 
-For the full plan, see [docs/production-roadmap.md](/Users/craigchirara/nangila/nangila-spice/docs/production-roadmap.md).
+For the full plan, see [docs/production-roadmap.md](docs/production-roadmap.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](/Users/craigchirara/nangila/nangila-spice/CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](/Users/craigchirara/nangila/nangila-spice/LICENSE).
+MIT. See [LICENSE](LICENSE).

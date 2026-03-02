@@ -234,22 +234,40 @@ def run_simulation(config: SimulationConfig) -> SimulationResult:
     else:
         # Step 5: Spawn solver nodes
         solver_binary = _find_solver_binary()
-        if solver_binary:
-            _log(config, f"[nangila-run] Found binary: {solver_binary}")
-            _log(config, "[nangila-run] Writing per-partition .sp sub-netlists...")
-            # Write each partition config as a .sp file that nangila-node can parse
-            for pc in partition_configs:
-                sp_path = os.path.join(output_dir, f"partition_{pc['partition_id']}.sp")
-                _write_partition_netlist(pc, sp_path)
-            _log(config, f"[nangila-run] Simulating {k} partitions via nangila-node...")
-            per_partition_times = _run_solver_processes(
-                solver_binary, partition_configs, config, output_dir
+        if not solver_binary:
+            wall_time = time.time() - start_time
+            result = SimulationResult(
+                waveform=Waveform(title=netlist.title, node_names=[], points=[]),
+                partition_result=part_result,
+                hardware=hw,
+                wall_time_secs=wall_time,
+                per_partition_times=[],
+                success=False,
+                error=(
+                    "nangila-node binary not found. This repo no longer falls back to "
+                    "synthetic in-process waveforms for simulation runs."
+                ),
+                validation_status="failed_missing_solver_binary",
             )
-        else:
-            _log(config, "[nangila-run] nangila-node not found — using in-process simulation")
-            per_partition_times = _run_in_process(
-                partition_configs, config, output_dir
-            )
+            if k > 1:
+                result.experimental = True
+                result.validation_status = "experimental_partitioned_missing_solver_binary"
+                result.warnings.append(
+                    "Partitioned runtime remains experimental and requires a built nangila-node binary."
+                )
+            print(f"\n{result.summary()}")
+            return result
+
+        _log(config, f"[nangila-run] Found binary: {solver_binary}")
+        _log(config, "[nangila-run] Writing per-partition .sp sub-netlists...")
+        # Write each partition config as a .sp file that nangila-node can parse
+        for pc in partition_configs:
+            sp_path = os.path.join(output_dir, f"partition_{pc['partition_id']}.sp")
+            _write_partition_netlist(pc, sp_path)
+        _log(config, f"[nangila-run] Simulating {k} partitions via nangila-node...")
+        per_partition_times = _run_solver_processes(
+            solver_binary, partition_configs, config, output_dir
+        )
 
         # Step 6: Merge waveforms
         _log(config, "[nangila-run] Merging waveforms...")
@@ -475,37 +493,7 @@ def _write_partition_netlist(partition_config: dict, output_path: str) -> None:
 
 def _find_solver_binary() -> Optional[str]:
     """Find the nangila-node binary."""
-    # Check common locations
-    candidates = [
-        os.path.join(
-            os.path.dirname(__file__), "..", "..",
-            "target", "debug", "nangila-node"
-        ),
-        os.path.join(
-            os.path.dirname(__file__), "..", "..",
-            "target", "release", "nangila-node"
-        ),
-        # System PATH
-        "nangila-node",
-    ]
-
-    for path in candidates:
-        expanded = os.path.expanduser(path)
-        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
-            return expanded
-
-    # Try which
-    try:
-        result = subprocess.run(
-            ["which", "nangila-node"],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except FileNotFoundError:
-        pass
-
-    return None
+    return find_nangila_binary()
 
 
 def _generate_partition_configs(
@@ -657,63 +645,6 @@ def _write_empty_waveform(output_dir: str, partition_id: int, pc: dict) -> None:
     output_path = os.path.join(output_dir, f"waveform_{partition_id}.json")
     with open(output_path, "w") as f:
         json.dump({"partition_id": partition_id, "node_mapping": pc.get("node_mapping", {}), "waveform": []}, f)
-
-
-def _run_in_process(
-    partition_configs: list[dict],
-    config: SimulationConfig,
-    output_dir: str,
-) -> list[float]:
-    """Run simulation in-process (no solver binary needed).
-
-    Simulates each partition sequentially using Python.
-    This is a simulation stub that produces realistic waveform data
-    for testing the pipeline.
-    """
-    import math
-
-    per_partition_times: list[float] = []
-
-    for pc in partition_configs:
-        start = time.time()
-        pid = pc["partition_id"]
-
-        # Generate synthetic waveform data for each node
-        num_steps = int(config.tstop / config.dt)
-        num_steps = min(num_steps, 10000)  # Cap for performance
-        actual_dt = config.tstop / num_steps
-
-        waveform_data = []
-        node_mapping = pc["node_mapping"]
-        node_names = [n for n in node_mapping if n != "0"]
-
-        for step in range(num_steps + 1):
-            t = step * actual_dt
-            voltages = {}
-
-            for node in node_names:
-                # Simulate RC-like charging behavior
-                tau = 10e-12  # 10ps time constant
-                v_final = 1.8  # Target voltage
-                v = v_final * (1.0 - math.exp(-t / tau)) if tau > 0 else v_final
-                voltages[node] = v
-
-            waveform_data.append({"time": t, "voltages": voltages})
-
-        # Write waveform output
-        output_path = os.path.join(output_dir, f"waveform_{pid}.json")
-        with open(output_path, "w") as f:
-            json.dump({
-                "partition_id": pid,
-                "node_mapping": node_mapping,
-                "waveform": waveform_data,
-            }, f)
-
-        elapsed = time.time() - start
-        per_partition_times.append(elapsed)
-        _log(config, f"  [P{pid}] In-process sim done in {elapsed:.3f}s")
-
-    return per_partition_times
 
 
 def _merge_partition_outputs(

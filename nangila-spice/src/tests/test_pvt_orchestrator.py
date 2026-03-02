@@ -84,6 +84,8 @@ class TestSimulateCorner:
 
         assert result["corner_name"] == nom.name
         assert not result["used_delta"]
+        assert result["experimental"]
+        assert result["execution_mode"] == "experimental_synthetic"
         assert "waveforms" in result
         assert result["wall_time"] >= 0.0
 
@@ -97,6 +99,8 @@ class TestSimulateCorner:
         result = simulate_corner(ff, golden_waveform=golden, use_delta=True)
 
         assert result["used_delta"]
+        assert result["experimental"]
+        assert result["execution_mode"] == "experimental_delta"
         assert result["peak_delta_v"] >= 0.0
 
     def test_delta_faster_than_full(self):

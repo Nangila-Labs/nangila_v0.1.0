@@ -10,6 +10,8 @@ Phase 1, Sprint 4 deliverable.
 import json
 import os
 import sys
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -32,6 +34,7 @@ from nangila_spice.orchestrator import (
     SimulationConfig,
     run_simulation,
 )
+from nangila_spice.correctness import find_nangila_binary
 
 
 CIRCUITS_DIR = os.path.join(
@@ -180,8 +183,35 @@ class TestHardwareDiscovery(unittest.TestCase):
 class TestEndToEnd(unittest.TestCase):
     """Test the full simulation pipeline."""
 
+    @classmethod
+    def setUpClass(cls):
+        cls._solver_binary = find_nangila_binary()
+        if cls._solver_binary:
+            return
+        cargo = shutil.which("cargo")
+        if not cargo:
+            return
+        repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        try:
+            subprocess.run(
+                [cargo, "build", "-p", "nangila-node", "--bin", "nangila-node"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return
+        cls._solver_binary = find_nangila_binary()
+
+    def require_solver_binary(self):
+        if not getattr(self, "_solver_binary", None):
+            self.skipTest("nangila-node binary not available and could not be built")
+
     def test_simulate_inverter(self):
         """Full pipeline on inverter circuit."""
+        self.require_solver_binary()
         path = os.path.join(CIRCUITS_DIR, "inverter.sp")
         if not os.path.exists(path):
             self.skipTest("inverter.sp not found")
@@ -214,6 +244,7 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_simulate_sram(self):
         """Full pipeline on SRAM circuit."""
+        self.require_solver_binary()
         path = os.path.join(CIRCUITS_DIR, "sram_6t.sp")
         if not os.path.exists(path):
             self.skipTest("sram_6t.sp not found")
@@ -248,6 +279,7 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_single_partition(self):
         """k=1 should work without partitioning overhead."""
+        self.require_solver_binary()
         path = os.path.join(CIRCUITS_DIR, "inverter.sp")
         if not os.path.exists(path):
             self.skipTest("inverter.sp not found")
