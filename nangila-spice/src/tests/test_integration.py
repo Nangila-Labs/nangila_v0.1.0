@@ -200,8 +200,13 @@ class TestEndToEnd(unittest.TestCase):
             result = run_simulation(config)
 
             self.assertTrue(result.success)
+            self.assertTrue(result.experimental)
+            self.assertEqual(result.validation_status, "experimental_partitioned_fallback_single_node")
+            self.assertIsNotNone(result.reference_comparison)
+            self.assertTrue(any("fell back to the validated single-node path" in warning for warning in result.warnings))
             self.assertGreater(result.waveform.num_points, 0)
             self.assertGreater(result.wall_time_secs, 0)
+            self.assertGreater(result.waveform.num_points, 10)
 
             # Check CSV was exported
             csv_path = os.path.join(tmpdir, "waveform.csv")
@@ -227,6 +232,11 @@ class TestEndToEnd(unittest.TestCase):
             result = run_simulation(config)
 
             self.assertTrue(result.success)
+            self.assertTrue(result.experimental)
+            self.assertEqual(result.validation_status, "experimental_partitioned_fallback_single_node")
+            self.assertIsNotNone(result.reference_comparison)
+            self.assertTrue(any("fell back to the validated single-node path" in warning for warning in result.warnings))
+            self.assertGreater(result.waveform.num_points, 10)
             self.assertGreater(
                 result.partition_result.total_boundary_nodes, 0,
                 "SRAM with 2 partitions should have ghost nodes"
@@ -253,6 +263,9 @@ class TestEndToEnd(unittest.TestCase):
 
             result = run_simulation(config)
             self.assertTrue(result.success)
+            self.assertFalse(result.experimental)
+            self.assertEqual(result.validation_status, "validated_single_node")
+            self.assertGreater(result.waveform.num_points, 2)
             self.assertEqual(
                 result.partition_result.total_boundary_nodes, 0,
                 "Single partition should have 0 ghost nodes"
@@ -294,6 +307,7 @@ class TestEndToEnd(unittest.TestCase):
                 result = run_simulation(config)
                 self.assertTrue(result.success)
                 self.assertEqual(result.waveform.num_nodes, 3) # vdd, out, X1.internal
+                self.assertGreater(result.waveform.num_points, 2)
         finally:
             os.unlink(path)
 

@@ -7,25 +7,10 @@ import argparse
 import sys
 import os
 import subprocess
-from struct import calcsize
-
-from .pvt_orchestrator import PvtOrchestrator, SweepConfig, generate_1000_corner_grid
 
 def get_project_root():
     this_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.abspath(os.path.join(this_dir, "..", ".."))
-
-def find_nangila_node_bin():
-    root = get_project_root()
-    debug_bin = os.path.join(root, "target", "debug", "nangila-node")
-    release_bin = os.path.join(root, "target", "release", "nangila-node")
-    ws_debug_bin = os.path.join(root, "..", "target", "debug", "nangila-node")
-    ws_release_bin = os.path.join(root, "..", "target", "release", "nangila-node")
-
-    for c in [release_bin, ws_release_bin, debug_bin, ws_debug_bin]:
-        if os.path.exists(c) and os.access(c, os.X_OK):
-            return c
-    return None
 
 def invoke_build(args):
     root = get_project_root()
@@ -47,18 +32,30 @@ def invoke_build(args):
         sys.exit(e.returncode)
 
 def invoke_run(args):
-    binary = find_nangila_node_bin()
-    if not binary:
-        print("Error: Could not find compiled nangila-node binary. Run `nangila build [--gpu]` first.")
-        sys.exit(1)
-        
+    from .orchestrator import SimulationConfig, run_simulation
+
     if not os.path.exists(args.netlist):
         print(f"Error: Netlist not found at {args.netlist}")
         sys.exit(1)
-        
-    cmd = [binary, "--partition", args.netlist]
-    print(f"Executing: {' '.join(cmd)}")
-    subprocess.run(cmd)
+
+    result = run_simulation(
+        SimulationConfig(
+            netlist_path=args.netlist,
+            partitions=args.partitions,
+            method=args.method,
+            reltol=args.reltol,
+            tstop=args.tstop,
+            dt=args.dt,
+            predict_depth=args.predict_depth,
+            output_dir=args.output_dir,
+            output_format=args.output_format,
+            validate_partitioned_against_reference=not args.skip_reference_validation,
+            reference_vdd=args.vdd,
+            verbose=args.verbose,
+        )
+    )
+    if not result.success:
+        sys.exit(1)
 
 def invoke_synth(args):
     root = get_project_root()
@@ -72,6 +69,8 @@ def invoke_synth(args):
     subprocess.run(["python3", synth_script])
 
 def invoke_sweep(args):
+    from .pvt_orchestrator import PvtOrchestrator, SweepConfig, generate_1000_corner_grid
+
     if not os.path.exists(args.netlist):
         print(f"Error: Netlist not found at {args.netlist}")
         sys.exit(1)
@@ -95,6 +94,15 @@ def invoke_sweep(args):
         print(f"Sweep failed: {e}")
         sys.exit(1)
 
+def invoke_phase1_report(args):
+    from .phase1_report import main as phase1_report_main
+
+    cmd = []
+    if args.include_extended:
+        cmd.append("--include-extended")
+    cmd.extend(["--output-json", args.output_json, "--output-md", args.output_md])
+    raise SystemExit(phase1_report_main(cmd))
+
 def main():
     parser = argparse.ArgumentParser(
         description="Nangila SPICE CLI - High Performance Circuit Verification"
@@ -106,6 +114,25 @@ def main():
     
     run_parser = subparsers.add_parser("run", help="Run a single transient simulation")
     run_parser.add_argument("netlist", type=str, help="Path to SPICE netlist (.sp/.scs)")
+    run_parser.add_argument("--partitions", type=int, default=None, help="Number of partitions (default: auto)")
+    run_parser.add_argument("--method", type=str, default="auto", help="Partitioning method")
+    run_parser.add_argument("--reltol", type=float, default=1e-3, help="Relative tolerance")
+    run_parser.add_argument("--tstop", type=float, default=1e-6, help="Simulation stop time")
+    run_parser.add_argument("--dt", type=float, default=1e-12, help="Simulation timestep")
+    run_parser.add_argument("--predict-depth", type=int, default=5, help="Speculative prediction depth")
+    run_parser.add_argument("--output-dir", type=str, default=None, help="Directory for waveform outputs")
+    run_parser.add_argument("--output-format", choices=("csv", "json"), default="csv", help="Waveform export format")
+    run_parser.add_argument("--vdd", type=float, default=1.8, help="Reference VDD for validation comparisons")
+    run_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show partitioning and solver-progress logs",
+    )
+    run_parser.add_argument(
+        "--skip-reference-validation",
+        action="store_true",
+        help="Skip single-node reference validation for partitioned runs",
+    )
     
     synth_parser = subparsers.add_parser("synth", help="Synthesize Verilog benchmarks to transistor SPICE")
     
@@ -113,6 +140,28 @@ def main():
     sweep_parser.add_argument("netlist", type=str, help="Baseline netlist to perturb")
     sweep_parser.add_argument("--corners", type=int, default=1000, help="Number of PVT corners to sweep")
     sweep_parser.add_argument("--full-sim", action="store_true", help="Force full massively-parallel Newton-Raphson simulation sweeps (disables delta mode)")
+
+    report_parser = subparsers.add_parser(
+        "phase1-report",
+        help="Run the Phase 1 ngspice-backed benchmark report",
+    )
+    report_parser.add_argument(
+        "--include-extended",
+        action="store_true",
+        help="Include the extended correctness gate in the report",
+    )
+    report_parser.add_argument(
+        "--output-json",
+        type=str,
+        default="artifacts/phase1_benchmark_report.json",
+        help="Path for the machine-readable report",
+    )
+    report_parser.add_argument(
+        "--output-md",
+        type=str,
+        default="artifacts/phase1_benchmark_report.md",
+        help="Path for the Markdown summary report",
+    )
     
     args = parser.parse_args()
     
@@ -124,6 +173,8 @@ def main():
         invoke_synth(args)
     elif args.command == "sweep":
         invoke_sweep(args)
+    elif args.command == "phase1-report":
+        invoke_phase1_report(args)
 
 if __name__ == "__main__":
     main()

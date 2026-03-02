@@ -47,7 +47,14 @@ pub struct PartitionNetlist {
     /// Circuit elements for MNA stamping
     pub elements: Vec<Element>,
     /// Mapping: ghost_net_id → (local_node_index, owner_partition_id)
+    #[serde(default)]
     pub ghost_map: Vec<(u64, usize, u32)>,
+    /// Ordered node names for waveform export (index 0 -> node 1)
+    #[serde(default)]
+    pub node_names: Vec<String>,
+    /// Initial node voltages: (1-indexed node ID, volts)
+    #[serde(default)]
+    pub initial_conditions: Vec<(usize, f64)>,
 }
 
 /// The solver engine that wraps either ngspice or the built-in solver.
@@ -116,6 +123,42 @@ impl SolverEngine {
         false
     }
 
+    fn seeded_state(&self) -> PartitionState {
+        let mut state = PartitionState::new(self.size());
+        for element in &self.netlist.elements {
+            match element {
+                Element::VoltageSource { pos, neg, source } => {
+                    let value = source.value_at(0.0);
+                    if *pos > 0 && *neg == 0 && *pos - 1 < state.voltages.len() {
+                        state.voltages[*pos - 1] = value;
+                    } else if *neg > 0 && *pos == 0 && *neg - 1 < state.voltages.len() {
+                        state.voltages[*neg - 1] = -value;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (node, voltage) in &self.netlist.initial_conditions {
+            if *node > 0 && *node - 1 < state.voltages.len() {
+                state.voltages[*node - 1] = *voltage;
+            }
+        }
+        state
+    }
+
+    pub fn initial_state(&mut self) -> PartitionState {
+        let seeded = self.seeded_state();
+        if self.backend != SolverBackend::BuiltIn || !self.netlist.initial_conditions.is_empty() {
+            return seeded;
+        }
+
+        self.solve_dc_operating_point(&seeded).unwrap_or(seeded)
+    }
+
+    pub fn node_names(&self) -> &[String] {
+        &self.netlist.node_names
+    }
+
     /// Solve one timestep.
     ///
     /// # Arguments
@@ -168,14 +211,143 @@ impl SolverEngine {
         let mut initial_guess = current.voltages.clone();
         initial_guess.resize(sys_size, 0.0);
 
+        let mut method = if current.cap_currents.is_empty() {
+            crate::mna::IntegrationMethod::BackwardEuler
+        } else {
+            crate::mna::IntegrationMethod::Trapezoidal
+        };
         let nr_state = NrState::new(sys_size).with_initial_guess(initial_guess);
 
-        let final_state = nr_solver.solve_timestep(nr_state, |v_guess| {
-            // 1. Stamp linear components (and calculate RHS from prior timestep capacitors)
+        let mut final_state = nr_solver.solve_timestep(nr_state.clone(), |v_guess| {
             let mut local_mna = MnaSystem::new(self.netlist.num_nodes, elements.clone());
-            local_mna.stamp_all(&current.voltages, dt);
+            local_mna.stamp_all(
+                &current.voltages,
+                &current.cap_currents,
+                dt,
+                current.time + dt,
+                method,
+            );
 
-            // 2. Add Non-Linear stamps using current v_guess
+            // Add Non-Linear stamps using current v_guess
+            for el in &elements {
+                match el {
+                    Element::Mosfet { d, g, s, model, .. } => {
+                        let (gm, gds, i_eq) = model.mna_stamp(v_guess);
+                        local_mna.stamp_mosfet(*d, *g, *s, gm, gds, i_eq);
+                    }
+                    Element::Diode { p, n, model } => {
+                        let stamp = model.stamp(
+                            if *p > 0 { v_guess[*p - 1] } else { 0.0 },
+                            if *n > 0 { v_guess[*n - 1] } else { 0.0 },
+                        );
+                        local_mna.stamp_diode(*p, *n, stamp.g_eq, stamp.i_eq);
+                    }
+                    _ => {}
+                }
+            }
+            let mut sparse = SparseMatrix::from_dense(&local_mna.g_matrix, local_mna.size, 1e-30);
+            sparse.rhs = local_mna.b_vector.clone();
+            sparse
+        });
+
+        // Fallback Trigger: If TRAP rings/diverges, damp it with Backward-Euler
+        if !final_state.converged {
+            warn!("TRAP ringing/divergence detected at t={:.2e}s, falling back to Backward-Euler damping", current.time + dt);
+            method = crate::mna::IntegrationMethod::BackwardEuler;
+            final_state = nr_solver.solve_timestep(nr_state, |v_guess| {
+                let mut local_mna = MnaSystem::new(self.netlist.num_nodes, elements.clone());
+                local_mna.stamp_all(
+                    &current.voltages,
+                    &current.cap_currents,
+                    dt,
+                    current.time + dt,
+                    method,
+                );
+                for el in &elements {
+                    match el {
+                        Element::Mosfet { d, g, s, model, .. } => {
+                            let (gm, gds, i_eq) = model.mna_stamp(v_guess);
+                            local_mna.stamp_mosfet(*d, *g, *s, gm, gds, i_eq);
+                        }
+                        Element::Diode { p, n, model } => {
+                            let stamp = model.stamp(
+                                if *p > 0 { v_guess[*p - 1] } else { 0.0 },
+                                if *n > 0 { v_guess[*n - 1] } else { 0.0 },
+                            );
+                            local_mna.stamp_diode(*p, *n, stamp.g_eq, stamp.i_eq);
+                        }
+                        _ => {}
+                    }
+                }
+                let mut sparse = SparseMatrix::from_dense(&local_mna.g_matrix, local_mna.size, 1e-30);
+                sparse.rhs = local_mna.b_vector.clone();
+                sparse
+            });
+        }
+
+        if !final_state.converged {
+            warn!("Newton-Raphson failed to converge at t={:.2e}s even with BE damping", current.time + dt);
+            return None;
+        }
+
+        // Extract full state vector including nodes + dynamic branch variables
+        let voltages: Vec<f64> = final_state.voltages[0..sys_size].to_vec();
+
+        // Calculate and cache capacitor historical states for the next Trapezoidal step
+        let mut cap_currents = Vec::new();
+        let mut cap_idx = 0;
+        for el in &self.netlist.elements {
+            if let Element::Capacitor { a, b, c } = el {
+                let va_new = if *a > 0 { voltages[*a - 1] } else { 0.0 };
+                let vb_new = if *b > 0 { voltages[*b - 1] } else { 0.0 };
+                let va_old = if *a > 0 { current.voltages.get(*a - 1).copied().unwrap_or(0.0) } else { 0.0 };
+                let vb_old = if *b > 0 { current.voltages.get(*b - 1).copied().unwrap_or(0.0) } else { 0.0 };
+                
+                let prev_ic = current.cap_currents.get(cap_idx).copied().unwrap_or(0.0);
+                
+                let ic_new = if dt > 0.0 {
+                    match method {
+                        crate::mna::IntegrationMethod::BackwardEuler => {
+                            (c / dt) * ((va_new - vb_new) - (va_old - vb_old))
+                        }
+                        crate::mna::IntegrationMethod::Trapezoidal => {
+                            (2.0 * c / dt) * ((va_new - vb_new) - (va_old - vb_old)) - prev_ic
+                        }
+                    }
+                } else {
+                    0.0
+                };
+                
+                cap_currents.push(ic_new);
+                cap_idx += 1;
+            }
+        }
+
+        Some(PartitionState {
+            voltages,
+            cap_currents,
+            time: current.time + dt,
+            validated: false,
+        })
+    }
+
+    fn solve_dc_operating_point(&mut self, seeded: &PartitionState) -> Option<PartitionState> {
+        let elements = self.netlist.elements.clone();
+        let num_nodes = self.netlist.num_nodes;
+        let mna = self.mna.as_mut()?;
+        let nr_solver = self.nr_solver.as_mut()?;
+
+        *mna = MnaSystem::new(num_nodes, elements.clone());
+        let sys_size = mna.size;
+
+        let mut initial_guess = seeded.voltages.clone();
+        initial_guess.resize(sys_size, 0.0);
+
+        let nr_state = NrState::new(sys_size).with_initial_guess(initial_guess);
+        let final_state = nr_solver.solve_timestep(nr_state, |v_guess| {
+            let mut local_mna = MnaSystem::new(num_nodes, elements.clone());
+            local_mna.stamp_all(&[], &[], 0.0, 0.0, crate::mna::IntegrationMethod::BackwardEuler);
+
             for el in &elements {
                 match el {
                     Element::Mosfet { d, g, s, model, .. } => {
@@ -193,23 +365,20 @@ impl SolverEngine {
                 }
             }
 
-            // 3. Convert assembled dense MNA to SparseMatrix for GpuSolver
             let mut sparse = SparseMatrix::from_dense(&local_mna.g_matrix, local_mna.size, 1e-30);
             sparse.rhs = local_mna.b_vector.clone();
             sparse
         });
 
         if !final_state.converged {
-            warn!("Newton-Raphson failed to converge at t={}", current.time + dt);
+            warn!("DC operating point failed to converge, falling back to seeded initial state");
             return None;
         }
 
-        // Extract pure node voltages
-        let voltages: Vec<f64> = final_state.voltages[0..self.netlist.num_nodes].to_vec();
-
         Some(PartitionState {
-            voltages,
-            time: current.time + dt,
+            voltages: final_state.voltages[0..sys_size].to_vec(),
+            cap_currents: Vec::new(),
+            time: 0.0,
             validated: false,
         })
     }
@@ -248,7 +417,7 @@ impl SolverEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mna::Element;
+    use crate::mna::{Element, SourceWaveform};
 
     fn make_rc_netlist() -> PartitionNetlist {
         PartitionNetlist {
@@ -258,7 +427,7 @@ mod tests {
                 Element::VoltageSource {
                     pos: 1,
                     neg: 0,
-                    v: 1.8,
+                    source: SourceWaveform::Dc(1.8),
                 },
                 Element::Resistor {
                     a: 1,
@@ -272,6 +441,8 @@ mod tests {
                 },
             ],
             ghost_map: vec![],
+            node_names: vec!["vdd".into(), "out".into()],
+            initial_conditions: vec![],
         }
     }
 
@@ -288,6 +459,7 @@ mod tests {
             if let Some(new_state) = engine.solve_step(&state, &[], dt) {
                 state = PartitionState {
                     voltages: new_state.voltages.clone(),
+                    cap_currents: new_state.cap_currents.clone(),
                     time: new_state.time,
                     validated: true,
                 };
@@ -304,6 +476,17 @@ mod tests {
             "V(2) should converge near 1.8V, got {}",
             state.voltages[1]
         );
+    }
+
+    #[test]
+    fn test_initial_state_uses_dc_operating_point_without_ic() {
+        let netlist = make_rc_netlist();
+        let mut engine = SolverEngine::with_backend(netlist, SolverBackend::BuiltIn);
+
+        let state = engine.initial_state();
+
+        assert!((state.voltages[0] - 1.8).abs() < 1e-9);
+        assert!((state.voltages[1] - 1.8).abs() < 1e-6);
     }
 
     #[test]
@@ -324,6 +507,8 @@ mod tests {
                 },
             ],
             ghost_map: vec![(100, 1, 0)], // net_id=100 maps to local node 1, owner=0
+            node_names: vec!["n1".into(), "n2".into()],
+            initial_conditions: vec![],
         };
 
         let mut engine = SolverEngine::with_backend(netlist, SolverBackend::BuiltIn);

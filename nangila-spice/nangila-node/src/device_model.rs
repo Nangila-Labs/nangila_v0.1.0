@@ -104,7 +104,7 @@ impl DeviceModel for DiodeModel {
 
         DeviceEval {
             current,
-            conductance,
+            conductance: conductance.max(1e-12), // Clamp to prevent CSR topology pruning
         }
     }
 
@@ -134,6 +134,12 @@ pub enum MosfetRegion {
     Saturation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MosfetType {
+    Nmos,
+    Pmos,
+}
+
 /// Level-1 NMOS MOSFET (Shichman-Hodges model).
 ///
 /// This is a simplified BSIM4-style model for Phase 3 bring-up.
@@ -145,6 +151,8 @@ pub enum MosfetRegion {
 /// Where β = μn * Cox * W/L
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MosfetLevel1 {
+    /// Device polarity
+    pub kind: MosfetType,
     /// Threshold voltage (V)
     pub vth: f64,
     /// Process transconductance: μn * Cox * W/L (A/V²)
@@ -163,6 +171,7 @@ impl MosfetLevel1 {
     /// Standard NMOS with typical 180nm process parameters.
     pub fn nmos_180nm(node_g: usize, node_d: usize, node_s: usize) -> Self {
         Self {
+            kind: MosfetType::Nmos,
             vth: 0.5,    // 500mV threshold
             beta: 1e-3,  // 1mA/V² (W/L=10, μnCox=100μA/V²)
             lambda: 0.1, // 0.1/V channel-length modulation
@@ -174,26 +183,30 @@ impl MosfetLevel1 {
 
     /// Evaluate drain current and region.
     pub fn evaluate(&self, vgs: f64, vds: f64) -> (f64, f64, f64, MosfetRegion) {
-        // Returns: (id, gm, gds, region)
-        let vov = vgs - self.vth;
+        // Returns: (id, gm, gds, region), where id is the current leaving the drain.
+        let (v_ctrl, v_out, id_sign) = match self.kind {
+            MosfetType::Nmos => (vgs, vds, 1.0),
+            MosfetType::Pmos => (-vgs, -vds, -1.0),
+        };
+        let vov = v_ctrl - self.vth.abs();
 
         if vov <= 0.0 {
             // Cutoff: Id = 0
-            return (0.0, 0.0, 0.0, MosfetRegion::Cutoff);
+            return (0.0, 1e-12, 1e-12, MosfetRegion::Cutoff); // Leakage/Clamping
         }
 
-        if vds < vov {
+        if v_out < vov {
             // Linear region
-            let id = self.beta * ((vov * vds) - (vds * vds / 2.0));
-            let gm = self.beta * vds; // ∂Id/∂Vgs
-            let gds = self.beta * (vov - vds); // ∂Id/∂Vds
-            (id, gm, gds, MosfetRegion::Linear)
+            let id_mag = self.beta * ((vov * v_out) - (v_out * v_out / 2.0));
+            let gm = (self.beta * v_out).max(1e-12); // ∂Id/∂Vg
+            let gds = (self.beta * (vov - v_out)).max(1e-12); // ∂Id/∂Vd
+            (id_sign * id_mag, gm, gds, MosfetRegion::Linear)
         } else {
             // Saturation
-            let id = (self.beta / 2.0) * vov * vov * (1.0 + self.lambda * vds);
-            let gm = self.beta * vov * (1.0 + self.lambda * vds); // ∂Id/∂Vgs
-            let gds = (self.beta / 2.0) * vov * vov * self.lambda; // ∂Id/∂Vds
-            (id, gm, gds, MosfetRegion::Saturation)
+            let id_mag = (self.beta / 2.0) * vov * vov * (1.0 + self.lambda * v_out.max(0.0));
+            let gm = (self.beta * vov * (1.0 + self.lambda * v_out.max(0.0))).max(1e-12);
+            let gds = ((self.beta / 2.0) * vov * vov * self.lambda).max(1e-12);
+            (id_sign * id_mag, gm, gds, MosfetRegion::Saturation)
         }
     }
 

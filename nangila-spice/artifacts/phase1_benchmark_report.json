@@ -1,0 +1,331 @@
+{
+  "mandatory": [
+    {
+      "name": "simple_rc",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/tests/spice_examples/simple_rc.sp",
+      "node_count": 2,
+      "sample_count": 118,
+      "nonlinear": false,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.7999820001834976e-05,
+        "rms_error_v": 1.272779478340549e-05,
+        "final_abs_error_v": 1.7999820001834976e-05,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.0018000000000000002,
+        "rms_tol_v": 0.0009000000000000001,
+        "final_abs_tol_v": 0.0018000000000000002,
+        "edge_tol_s": null
+      },
+      "runtime_s": {
+        "ngspice": 0.044892458001413615,
+        "nangila": 0.008356333000847371,
+        "total": 0.05337612500079558
+      }
+    },
+    {
+      "name": "inverter",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/reference_circuits/inverter.sp",
+      "node_count": 3,
+      "sample_count": 633,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 0.014047238799894446,
+        "rms_error_v": 0.0011854805601812938,
+        "final_abs_error_v": 2.69256198e-09,
+        "max_edge_timing_error_s": 1.7678247539912534e-13
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.020336583998869173,
+        "nangila": 0.05343466699923738,
+        "total": 0.07417995799914934
+      }
+    },
+    {
+      "name": "sram_6t",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/reference_circuits/sram_6t.sp",
+      "node_count": 6,
+      "sample_count": 3102,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 0.007467155946726367,
+        "rms_error_v": 0.00018315684111156098,
+        "final_abs_error_v": 0.00016728706722424214,
+        "max_edge_timing_error_s": 0.0
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.023289459000807256,
+        "nangila": 0.15927074999854085,
+        "total": 0.18466204200012726
+      }
+    },
+    {
+      "name": "c17_full",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/reference_circuits/c17_full.sp",
+      "node_count": 11,
+      "sample_count": 649,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 6.51807603e-22,
+        "rms_error_v": 2.802009536957562e-23,
+        "final_abs_error_v": 6.51807603e-22,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.019871750002494082,
+        "nangila": 0.008591333997173933,
+        "total": 0.028712832998280646
+      }
+    },
+    {
+      "name": "c17_synth",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/reference_circuits/c17_synth.sp",
+      "node_count": 11,
+      "sample_count": 649,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 6.51807603e-22,
+        "rms_error_v": 2.802009536957562e-23,
+        "final_abs_error_v": 6.51807603e-22,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.019260042001405964,
+        "nangila": 0.008453917002043454,
+        "total": 0.02796216599745094
+      }
+    },
+    {
+      "name": "c17_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/c17.sp",
+      "node_count": 11,
+      "sample_count": 649,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.45142193e-31,
+        "rms_error_v": 8.057240513292859e-33,
+        "final_abs_error_v": 1.45142193e-31,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.01973083300254075,
+        "nangila": 0.009677916001237463,
+        "total": 0.029659041996637825
+      }
+    },
+    {
+      "name": "c432_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/c432.sp",
+      "node_count": 125,
+      "sample_count": 7375,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.65062793e-27,
+        "rms_error_v": 1.9220660918522342e-29,
+        "final_abs_error_v": 1.65062793e-27,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.1050472089991672,
+        "nangila": 2.382813415999408,
+        "total": 2.490336417002254
+      }
+    },
+    {
+      "name": "s27_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/s27.sp",
+      "node_count": 19,
+      "sample_count": 1121,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.31929533e-30,
+        "rms_error_v": 4.0578680659998694e-32,
+        "final_abs_error_v": 1.31929533e-30,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.023569917000713758,
+        "nangila": 0.014161207996949088,
+        "total": 0.0381462500008638
+      }
+    },
+    {
+      "name": "s382_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/s382.sp",
+      "node_count": 105,
+      "sample_count": 6195,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 3.33528792e-31,
+        "rms_error_v": 1.6723385968403955e-32,
+        "final_abs_error_v": 3.33528792e-31,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.08005387499724748,
+        "nangila": 1.0484802080027293,
+        "total": 1.1305675000003248
+      }
+    },
+    {
+      "name": "s641_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/s641.sp",
+      "node_count": 169,
+      "sample_count": 9971,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.65062792e-27,
+        "rms_error_v": 3.6854886087926345e-29,
+        "final_abs_error_v": 1.65062792e-27,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.14212525000039022,
+        "nangila": 2.7353005000004487,
+        "total": 2.8807052919983107
+      }
+    }
+  ],
+  "extended": [
+    {
+      "name": "c880_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/c880.sp",
+      "node_count": 260,
+      "sample_count": 15340,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.65810482e-27,
+        "rms_error_v": 3.770257580832922e-29,
+        "final_abs_error_v": 1.65810482e-27,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.28232454099997994,
+        "nangila": 37.25885245799873,
+        "total": 37.547166708001896
+      }
+    },
+    {
+      "name": "c1355_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/c1355.sp",
+      "node_count": 213,
+      "sample_count": 12567,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.72594138e-27,
+        "rms_error_v": 3.079216964140982e-29,
+        "final_abs_error_v": 1.72594138e-27,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.35244287499881466,
+        "nangila": 19.67463937499997,
+        "total": 20.031996916000935
+      }
+    },
+    {
+      "name": "c1908_auto",
+      "netlist_path": "/Users/craigchirara/nangila/nangila-spice/benchmarks/auto_synth/c1908.sp",
+      "node_count": 225,
+      "sample_count": 13275,
+      "nonlinear": true,
+      "pass": true,
+      "metrics": {
+        "max_abs_error_v": 1.65810482e-27,
+        "rms_error_v": 3.20635067478451e-29,
+        "final_abs_error_v": 1.65810482e-27,
+        "max_edge_timing_error_s": null
+      },
+      "tolerances": {
+        "max_abs_tol_v": 0.036000000000000004,
+        "rms_tol_v": 0.018000000000000002,
+        "final_abs_tol_v": 0.018000000000000002,
+        "edge_tol_s": 1e-11
+      },
+      "runtime_s": {
+        "ngspice": 0.5424831659984193,
+        "nangila": 40.07918179199987,
+        "total": 40.62634362500103
+      }
+    }
+  ]
+}

@@ -1,5 +1,5 @@
-use crate::device_model::{DiodeModel, MosfetLevel1};
-use crate::mna::Element;
+use crate::device_model::{DiodeModel, MosfetLevel1, MosfetType};
+use crate::mna::{Element, SourceWaveform};
 use crate::ngspice_ffi::PartitionNetlist;
 use std::collections::HashMap;
 use std::fs::File;
@@ -11,7 +11,10 @@ use tracing::{debug, error, info};
 /// Handles: f (1e-15), p (1e-12), n (1e-9), u (1e-6), m (1e-3),
 ///          k (1e3), meg (1e6), g (1e9), t (1e12).
 pub fn parse_scale_factor(val: &str) -> Option<f64> {
-    let val = val.to_lowercase();
+    let val = val
+        .trim()
+        .trim_matches(|c: char| matches!(c, '(' | ')' | ',' | ';'))
+        .to_lowercase();
     let split_idx = val.find(|c: char| !c.is_numeric() && c != '.' && c != '+' && c != '-');
 
     if let Some(idx) = split_idx {
@@ -65,6 +68,8 @@ pub struct SpiceParser {
     pub models: HashMap<String, ModelCard>,
     /// Mapping: ghost_net_id → (local_node_index, owner_partition_id)
     pub ghost_map: Vec<(u64, usize, u32)>,
+    /// Raw initial conditions parsed from `.IC` directives.
+    initial_conditions_raw: Vec<(String, f64)>,
     /// Environmental PVT parameters
     pub process: String,
     pub vdd: f64,
@@ -86,6 +91,7 @@ impl SpiceParser {
             params: HashMap::new(),
             models: HashMap::new(),
             ghost_map: Vec::new(),
+            initial_conditions_raw: Vec::new(),
             process: process.to_uppercase(),
             vdd,
             temp_c,
@@ -100,6 +106,71 @@ impl SpiceParser {
             return v;
         }
         parse_scale_factor(s).unwrap_or(0.0)
+    }
+
+    fn parse_pulse_source(&self, remainder: &str) -> Option<SourceWaveform> {
+        let after_paren = remainder.splitn(2, '(').nth(1)?;
+        let vals: Vec<&str> = after_paren
+            .split(|c: char| c == ' ' || c == ',' || c == ')')
+            .filter(|s| !s.is_empty())
+            .collect();
+        if vals.len() < 7 {
+            return None;
+        }
+        Some(SourceWaveform::Pulse {
+            v1: self.parse_value(vals[0]),
+            v2: self.parse_value(vals[1]),
+            td: self.parse_value(vals[2]),
+            tr: self.parse_value(vals[3]),
+            tf: self.parse_value(vals[4]),
+            pw: self.parse_value(vals[5]),
+            per: self.parse_value(vals[6]),
+        })
+    }
+
+    fn parse_ic_assignment(&mut self, token: &str, prefix: &str) {
+        let upper = token.to_uppercase();
+        if !upper.starts_with("V(") {
+            return;
+        }
+        let close = match token.find(')') {
+            Some(idx) => idx,
+            None => return,
+        };
+        let eq = match token.find('=') {
+            Some(idx) => idx,
+            None => return,
+        };
+        if eq <= close {
+            return;
+        }
+        let node = &token[2..close];
+        let value = self.parse_value(&token[eq + 1..]);
+        let resolved = if prefix.is_empty() {
+            node.to_lowercase()
+        } else {
+            format!("{}.{}", prefix, node.to_lowercase())
+        };
+        self.initial_conditions_raw.push((resolved, value));
+    }
+
+    fn node_names(&self) -> Vec<String> {
+        let mut node_names = vec![String::new(); self.next_node_id.saturating_sub(1)];
+        for (name, idx) in &self.node_map {
+            if *idx == 0 {
+                continue;
+            }
+            let slot = &mut node_names[*idx - 1];
+            if slot.is_empty() || slot.starts_with("node_") {
+                *slot = name.clone();
+            }
+        }
+        for (i, name) in node_names.iter_mut().enumerate() {
+            if name.is_empty() {
+                *name = format!("node_{}", i + 1);
+            }
+        }
+        node_names
     }
 
     /// Map an alphanumeric SPICE node name to our continuous `usize` integer ID space.
@@ -284,14 +355,13 @@ impl SpiceParser {
                 }
             }
             'L' => {
-                // Inductor — for now we treat it like a zero-resistance wire in our linear solver.
-                // Full inductor stamping (d/dt term) is deferred to Sprint 15.
+                // Inductor: parses as a Dynamic branch element.
+                // At DC operating points (dt=0), it stamps as a short-circuit (0V voltage source).
                 if tokens.len() >= 4 {
                     let a = self.resolve_node(tokens[1], prefix);
                     let b = self.resolve_node(tokens[2], prefix);
-                    let _val = self.parse_value(tokens[3]);
-                    // Approximation: short circuit (0Ω resistor) for DC operating point
-                    self.elements.push(Element::Resistor { a, b, r: 1e-6 });
+                    let l = self.parse_value(tokens[3]);
+                    self.elements.push(Element::Inductor { a, b, l });
                 }
             }
             'V' => {
@@ -302,25 +372,11 @@ impl SpiceParser {
                     // Join the remainder so we can search across token boundaries
                     let remainder = tokens[3..].join(" ").to_uppercase();
 
-                    let v = if remainder.starts_with("DC") {
-                        // "DC 1.8" — skip keyword, parse next value
-                        tokens.get(4).map(|s| self.parse_value(s)).unwrap_or(0.0)
+                    let source = if remainder.starts_with("DC") {
+                        SourceWaveform::Dc(tokens.get(4).map(|s| self.parse_value(s)).unwrap_or(0.0))
                     } else if remainder.contains("PULSE(") || remainder.contains("PULSE (") {
-                        // PULSE(V_lo V_hi td tr tf pw per)
-                        // We extract V_hi (index 1 inside parens) as the steady-state
-                        // stimulus for the DC operating point.
-                        let after_paren = remainder
-                            .splitn(2, '(')
-                            .nth(1)
-                            .unwrap_or("");
-                        let vals: Vec<&str> = after_paren
-                            .split(|c: char| c == ' ' || c == ',' || c == ')')
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        // vals[0]=V_lo, vals[1]=V_hi
-                        vals.get(1)
-                            .and_then(|s| parse_scale_factor(s))
-                            .unwrap_or(0.0)
+                        self.parse_pulse_source(&remainder)
+                            .unwrap_or(SourceWaveform::Dc(0.0))
                     } else if remainder.starts_with("SIN(") || remainder.starts_with("SIN (") {
                         // SIN(offset amplitude freq ...) — use amplitude as DC approximation
                         let after_paren = remainder
@@ -334,27 +390,28 @@ impl SpiceParser {
                         // vals[0]=offset, vals[1]=amplitude
                         let offset = vals.first().and_then(|s| parse_scale_factor(s)).unwrap_or(0.0);
                         let amp = vals.get(1).and_then(|s| parse_scale_factor(s)).unwrap_or(0.0);
-                        offset + amp
+                        SourceWaveform::Dc(offset + amp)
                     } else {
-                        self.parse_value(tokens[3])
+                        SourceWaveform::Dc(self.parse_value(tokens[3]))
                     };
 
                     // PVT Scale DC Voltage source if it looks like VDD
-                    let v = if (v - 1.8).abs() < 0.2 || (v - 1.0).abs() < 0.2 {
-                        v * (self.vdd / 1.8)
-                    } else {
-                        v
+                    let source = match source {
+                        SourceWaveform::Dc(v) if (v - 1.8).abs() < 0.2 || (v - 1.0).abs() < 0.2 => {
+                            SourceWaveform::Dc(v * (self.vdd / 1.8))
+                        }
+                        other => other,
                     };
 
-                    self.elements.push(Element::VoltageSource { pos, neg, v });
+                    self.elements.push(Element::VoltageSource { pos, neg, source });
                 }
             }
             'I' => {
                 if tokens.len() >= 4 {
                     let pos = self.resolve_node(tokens[1], prefix);
                     let neg = self.resolve_node(tokens[2], prefix);
-                    let i = self.parse_value(tokens[3]);
-                    self.elements.push(Element::CurrentSource { pos, neg, i });
+                    let source = SourceWaveform::Dc(self.parse_value(tokens[3]));
+                    self.elements.push(Element::CurrentSource { pos, neg, source });
                 }
             }
             'M' => {
@@ -382,48 +439,82 @@ impl SpiceParser {
                     }
 
                     // Look up parameters from .MODEL card or use defaults
+                    let mut kind = if model_name.contains('P') {
+                        MosfetType::Pmos
+                    } else {
+                        MosfetType::Nmos
+                    };
                     let mut vth = 0.5;
                     let mut u0 = 0.04; // 400 cm^2/Vs ~ 0.04 m^2/Vs typical NMOS
                     let mut tox = 2e-9; // 2nm typical
+                    let mut lambda = 0.0;
+                    let mut kp_override: Option<f64> = None;
                     
                     if let Some(model) = self.models.get(&model_name) {
+                        if model.model_type.contains("PMOS") {
+                            kind = MosfetType::Pmos;
+                        } else if model.model_type.contains("NMOS") {
+                            kind = MosfetType::Nmos;
+                        }
                         if let Some(&v) = model.params.get("vto") { vth = v; }
+                        if let Some(&kp) = model.params.get("kp") { kp_override = Some(kp.abs()); }
                         if let Some(&u) = model.params.get("u0") { u0 = u * 1e-4; } // convert cm^2/Vs to m^2/Vs
                         if let Some(&t) = model.params.get("tox") { tox = t; }
+                        if let Some(&lam) = model.params.get("lambda") { lambda = lam.max(0.0); }
                     }
 
                     // PVT CMOS Scaling Laws
                     let delta_t = self.temp_c - 27.0;
                     let t_kelvin = self.temp_c + 273.15;
                     let t_nom_kelvin = 27.0 + 273.15;
+                    let mut mobility_scale = (t_nom_kelvin / t_kelvin).powf(1.5);
                     
                     // Temperature effects
                     vth -= 0.002 * delta_t; 
-                    u0 *= (t_nom_kelvin / t_kelvin).powf(1.5);
+                    u0 *= mobility_scale;
                     
                     // Process corner effects
                     match self.process.as_str() {
-                        "FF" => { u0 *= 1.15; vth -= 0.1; }
-                        "SS" => { u0 *= 0.85; vth += 0.1; }
+                        "FF" => { mobility_scale *= 1.15; u0 *= 1.15; vth -= 0.1; }
+                        "SS" => { mobility_scale *= 0.85; u0 *= 0.85; vth += 0.1; }
                         "FS" => {
-                            if model_name.contains("NMOS") || model_name.contains("N") { u0 *= 1.10; vth -= 0.1; } 
-                            else { u0 *= 0.90; vth += 0.1; }
+                            if model_name.contains("NMOS") || model_name.contains("N") {
+                                mobility_scale *= 1.10;
+                                u0 *= 1.10;
+                                vth -= 0.1;
+                            } else {
+                                mobility_scale *= 0.90;
+                                u0 *= 0.90;
+                                vth += 0.1;
+                            }
                         }
                         "SF" => {
-                            if model_name.contains("NMOS") || model_name.contains("N") { u0 *= 0.90; vth += 0.1; } 
-                            else { u0 *= 1.10; vth -= 0.1; }
+                            if model_name.contains("NMOS") || model_name.contains("N") {
+                                mobility_scale *= 0.90;
+                                u0 *= 0.90;
+                                vth += 0.1;
+                            } else {
+                                mobility_scale *= 1.10;
+                                u0 *= 1.10;
+                                vth -= 0.1;
+                            }
                         }
                         _ => {} // TT is nominal 1.0 multiplier
                     }
 
                     let eps_ox = 3.9 * 8.854e-12;
                     let cox = eps_ox / tox;
-                    let beta = u0 * cox * (w / l);
+                    let beta = if let Some(kp) = kp_override {
+                        kp * (w / l) * mobility_scale
+                    } else {
+                        u0 * cox * (w / l)
+                    };
 
                     let model = MosfetLevel1 {
+                        kind,
                         vth,
                         beta,
-                        lambda: 0.1, // Fixed channel length modulation for now
+                        lambda,
                         node_g: g,
                         node_d: d,
                         node_s: s,
@@ -527,7 +618,12 @@ impl SpiceParser {
                             upper, file_ref
                         );
                     }
-                    ".IC" | ".TRAN" | ".OPTIONS" | ".GLOBAL" | ".END" | ".ENDS" => {
+                    ".IC" => {
+                        for tok in &tokens[1..] {
+                            self.parse_ic_assignment(tok, prefix);
+                        }
+                    }
+                    ".TRAN" | ".OPTIONS" | ".GLOBAL" | ".END" | ".ENDS" => {
                         // Known-safe directives we deliberately skip at this stage
                         debug!("Skipping directive: {}", upper);
                     }
@@ -611,6 +707,12 @@ impl SpiceParser {
         // Pass 2: Inflate instances and primitives
         parser.flatten_netlist(path_ref)?;
 
+        let mut initial_conditions = Vec::new();
+        for (name, voltage) in parser.initial_conditions_raw.clone() {
+            let node = parser.get_or_create_node(&name);
+            initial_conditions.push((node, voltage));
+        }
+
         // Pass 3: Global GMIN injection (100 MΩ pull-down on every mapped node)
         // This guarantees no floating nets exist anywhere, preventing Singular Matrix panics.
         let num_actual_nodes = parser.next_node_id; // Starts at 1
@@ -620,11 +722,17 @@ impl SpiceParser {
 
         let name = path_ref.file_name().unwrap_or_default().to_string_lossy().into_owned();
 
+        let node_names = parser.node_names();
+        let elements = parser.elements;
+        let ghost_map = parser.ghost_map;
+
         Ok(PartitionNetlist {
             name,
             num_nodes: parser.next_node_id - 1,
-            elements: parser.elements,
-            ghost_map: parser.ghost_map,
+            elements,
+            ghost_map,
+            node_names,
+            initial_conditions,
         })
     }
 }
@@ -661,7 +769,7 @@ mod tests {
         let netlist = SpiceParser::parse_file(&path, "TT", 1.8, 27.0).unwrap();
         
         assert_eq!(netlist.num_nodes, 2);
-        assert_eq!(netlist.elements.len(), 3);
+        assert_eq!(netlist.elements.len(), 5); // 3 original + 2 Gmin resistors
         
         // Ensure R1 is 1000 ohms
         if let Element::Resistor { a: _, b: _, r } = netlist.elements[1] {
@@ -699,8 +807,8 @@ mod tests {
         // Primitives: 1 Vsource, 1 R_load
         // Instances: X1 expands to 2 Resistors, 1 Cap (3 elements)
         //            X2 expands to 2 Resistors, 1 Cap (3 elements)
-        // Total elements expected: 1 + 1 + 3 + 3 = 8
-        assert_eq!(netlist.elements.len(), 8);
+        // Total elements expected: 8 original + 5 Gmin resistors = 13
+        assert_eq!(netlist.elements.len(), 13);
 
         // Nodes: global 1, 2, 3
         //        internal X1.internal
@@ -718,5 +826,35 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "R1 1 2 1k");
         assert_eq!(lines[1], "C1 2 0 100f");
+    }
+
+    #[test]
+    fn test_model_kp_includes_geometry_scaling() {
+        let test_netlist = r#"
+        .model NMOS NMOS (LEVEL=1 VTO=0.7 KP=110u)
+        .model PMOS PMOS (LEVEL=1 VTO=-0.7 KP=55u)
+        M1 out in vdd vdd PMOS W=2u L=0.18u
+        M2 out in 0   0   NMOS W=1u L=0.18u
+        "#;
+
+        let path = std::path::PathBuf::from("/tmp/nangila_test_kp_geometry.sp");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(test_netlist.as_bytes()).unwrap();
+
+        let netlist = SpiceParser::parse_file(&path, "TT", 1.8, 27.0).unwrap();
+        let mosfets: Vec<_> = netlist
+            .elements
+            .iter()
+            .filter_map(|element| match element {
+                Element::Mosfet { model, .. } => Some(model),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(mosfets.len(), 2);
+        assert!((mosfets[0].beta - mosfets[1].beta).abs() < 1e-12);
+        assert!((mosfets[0].beta - (110e-6 * (1.0e-6 / 0.18e-6))).abs() < 1e-12);
+        assert_eq!(mosfets[0].lambda, 0.0);
+        assert_eq!(mosfets[1].lambda, 0.0);
     }
 }

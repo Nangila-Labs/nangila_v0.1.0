@@ -6,11 +6,12 @@
 //! Phase 1, Sprint 3: Full solver loop operational with built-in MNA solver.
 
 use clap::Parser;
+use serde::Serialize;
 use tracing::info;
 
 use nangila_node::comm::CommLayer;
 use nangila_node::ghost::GhostBuffer;
-use nangila_node::mna::Element;
+use nangila_node::mna::{Element, SourceWaveform};
 use nangila_node::ngspice_ffi::PartitionNetlist;
 use nangila_node::parser::SpiceParser;
 use nangila_node::solver::{SimConfig, TransientSolver};
@@ -64,6 +65,71 @@ struct Args {
     /// Run built-in RC demo circuit (for testing)
     #[arg(long, default_value_t = false)]
     demo: bool,
+
+    /// Write the full waveform to JSON for external comparison or orchestration
+    #[arg(long)]
+    waveform_json: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WaveformPointJson {
+    time: f64,
+    voltages: std::collections::BTreeMap<String, f64>,
+}
+
+#[derive(Serialize)]
+struct WaveformJson {
+    netlist: String,
+    node_names: Vec<String>,
+    waveform: Vec<WaveformPointJson>,
+    stats: WaveformStatsJson,
+}
+
+#[derive(Serialize)]
+struct WaveformStatsJson {
+    total_steps: u64,
+    wall_time_secs: f64,
+    prediction_hits: u64,
+    prediction_misses: u64,
+    rollbacks: u64,
+}
+
+fn write_waveform_json(
+    path: &str,
+    netlist_name: &str,
+    node_names: &[String],
+    waveform: &[(f64, Vec<f64>)],
+    stats: &nangila_node::solver::SimStats,
+) -> Result<(), String> {
+    let mut points = Vec::with_capacity(waveform.len());
+    for (time, values) in waveform {
+        let mut voltages = std::collections::BTreeMap::new();
+        for (idx, name) in node_names.iter().enumerate() {
+            if idx < values.len() {
+                voltages.insert(name.clone(), values[idx]);
+            }
+        }
+        points.push(WaveformPointJson {
+            time: *time,
+            voltages,
+        });
+    }
+
+    let payload = WaveformJson {
+        netlist: netlist_name.to_string(),
+        node_names: node_names.to_vec(),
+        waveform: points,
+        stats: WaveformStatsJson {
+            total_steps: stats.total_steps,
+            wall_time_secs: stats.wall_time_secs,
+            prediction_hits: stats.prediction_hits,
+            prediction_misses: stats.prediction_misses,
+            rollbacks: stats.rollbacks,
+        },
+    };
+
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(file, &payload).map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -124,7 +190,7 @@ fn run_demo(args: Args) {
             Element::VoltageSource {
                 pos: 1,
                 neg: 0,
-                v: 1.8,
+                source: SourceWaveform::Dc(1.8),
             },
             Element::Resistor {
                 a: 1,
@@ -138,6 +204,8 @@ fn run_demo(args: Args) {
             },
         ],
         ghost_map: vec![],
+        node_names: vec!["vdd".into(), "cap".into()],
+        initial_conditions: vec![],
     };
 
     let mut ghosts = GhostBuffer::new();
@@ -162,6 +230,13 @@ fn run_demo(args: Args) {
     info!("Final voltages:");
     for (i, v) in final_state.voltages.iter().enumerate() {
         info!("  V(node {}) = {:.6}V", i + 1, v);
+    }
+
+    if let Some(path) = args.waveform_json.as_deref() {
+        if let Err(err) = write_waveform_json(path, "RC Demo", &["vdd".into(), "cap".into()], &solver.waveform, &stats) {
+            eprintln!("ERROR: Failed to write waveform JSON: {}", err);
+            std::process::exit(1);
+        }
     }
     info!("Steps: {}", stats.total_steps);
     info!("Wall time: {:.3}s", stats.wall_time_secs);
@@ -212,6 +287,14 @@ fn run_from_netlist(netlist: PartitionNetlist, args: Args) {
         max_history: 100,
     };
 
+    let node_names = if netlist.node_names.is_empty() {
+        (1..=netlist.num_nodes)
+            .map(|i| format!("node_{}", i))
+            .collect::<Vec<_>>()
+    } else {
+        netlist.node_names.clone()
+    };
+    let netlist_name = netlist.name.clone();
     let mut solver = TransientSolver::new(netlist, ghosts, comm, config);
     let (final_state, stats) = solver.run();
 
@@ -219,6 +302,13 @@ fn run_from_netlist(netlist: PartitionNetlist, args: Args) {
     info!("Final node voltages:");
     for (i, v) in final_state.voltages.iter().enumerate() {
         info!("  V(node {}) = {:.6}V", i + 1, v);
+    }
+
+    if let Some(path) = args.waveform_json.as_deref() {
+        if let Err(err) = write_waveform_json(path, &netlist_name, &node_names, &solver.waveform, &stats) {
+            eprintln!("ERROR: Failed to write waveform JSON: {}", err);
+            std::process::exit(1);
+        }
     }
     info!("Timesteps: {}", stats.total_steps);
     info!("Wall time:  {:.3}s", stats.wall_time_secs);

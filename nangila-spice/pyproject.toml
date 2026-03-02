@@ -5,14 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nangila-spice"
 version = "0.2.0"
-description = "Nangila SPICE GPU-accelerated circuit simulator"
+description = "Nangila SPICE transient simulator with ngspice-backed correctness validation"
 readme = "README.md"
 authors = [
     { name = "Craig Chirara" }
 ]
 requires-python = ">=3.8"
 dependencies = [
-    # Add external dependencies here if needed (e.g. numpy, matplotlib)
+    "networkx>=2.8",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+viz = [
+    "matplotlib>=3.7",
+]
+ml = [
+    "torch>=2.0",
 ]
 
 [project.scripts]

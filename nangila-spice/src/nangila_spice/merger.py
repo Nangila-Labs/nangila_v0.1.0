@@ -225,9 +225,6 @@ def export_csv(waveform: Waveform, output_path: str) -> None:
                 row.append(f"{v:.6e}")
             writer.writerow(row)
 
-    print(f"[merger] Exported {waveform.num_points} points to {output_path}")
-
-
 def export_json(waveform: Waveform, output_path: str) -> None:
     """Export waveform to JSON file."""
     data = {
@@ -246,7 +243,6 @@ def export_json(waveform: Waveform, output_path: str) -> None:
     with open(output_path, "w") as f:
         json.dump(data, f, indent=2)
 
-    print(f"[merger] Exported {waveform.num_points} points to {output_path}")
 
 
 def _find_closest_time(times: list[float], target: float) -> Optional[int]:

@@ -8,14 +8,79 @@
 //!
 //! Where x is the vector of node voltages.
 //!
-//! For dynamic elements (capacitors), we use Backward Euler:
-//!   I_c = C * (V_n - V_{n-1}) / dt
+//! For dynamic elements (capacitors), we use either Backward Euler or Trapezoidal:
+//!   - BE:   I_c = C * (V_n - V_{n-1}) / dt
+//!   - TRAP: I_c = 2C * (V_n - V_{n-1}) / dt - I_{c, n-1}
 //!
-//! Phase 1, Sprint 3 deliverable.
+//! Phase 1, Sprint 22 deliverable.
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IntegrationMethod {
+    BackwardEuler,
+    Trapezoidal,
+}
+
 use crate::device_model::{DiodeModel, MosfetLevel1};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SourceWaveform {
+    Dc(f64),
+    Pulse {
+        v1: f64,
+        v2: f64,
+        td: f64,
+        tr: f64,
+        tf: f64,
+        pw: f64,
+        per: f64,
+    },
+}
+
+impl SourceWaveform {
+    pub fn value_at(&self, time: f64) -> f64 {
+        match self {
+            SourceWaveform::Dc(v) => *v,
+            SourceWaveform::Pulse {
+                v1,
+                v2,
+                td,
+                tr,
+                tf,
+                pw,
+                per,
+            } => {
+                if *per <= 0.0 {
+                    return *v1;
+                }
+                if time < *td {
+                    return *v1;
+                }
+
+                let local = (time - *td) % *per;
+                if local < *tr {
+                    if *tr <= 0.0 {
+                        *v2
+                    } else {
+                        *v1 + (*v2 - *v1) * (local / *tr)
+                    }
+                } else if local < *tr + *pw {
+                    *v2
+                } else if local < *tr + *pw + *tf {
+                    if *tf <= 0.0 {
+                        *v1
+                    } else {
+                        let fall = (local - *tr - *pw) / *tf;
+                        *v2 + (*v1 - *v2) * fall
+                    }
+                } else {
+                    *v1
+                }
+            }
+        }
+    }
+}
 
 /// A circuit element in the partition's sub-netlist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,10 +89,20 @@ pub enum Element {
     Resistor { a: usize, b: usize, r: f64 },
     /// Capacitor: C(node_a, node_b, capacitance_farads)
     Capacitor { a: usize, b: usize, c: f64 },
-    /// Voltage source: V(node_pos, node_neg, voltage)
-    VoltageSource { pos: usize, neg: usize, v: f64 },
-    /// Current source: I(node_pos, node_neg, current)
-    CurrentSource { pos: usize, neg: usize, i: f64 },
+    /// Inductor: L(node_a, node_b, inductance_henrys)
+    Inductor { a: usize, b: usize, l: f64 },
+    /// Voltage source: V(node_pos, node_neg, waveform)
+    VoltageSource {
+        pos: usize,
+        neg: usize,
+        source: SourceWaveform,
+    },
+    /// Current source: I(node_pos, node_neg, waveform)
+    CurrentSource {
+        pos: usize,
+        neg: usize,
+        source: SourceWaveform,
+    },
     /// Ghost node injection: fixed voltage from neighbor partition
     GhostSource { node: usize, voltage: f64 },
     /// Non-linear Diode (node_p, node_n)
@@ -45,6 +120,8 @@ pub struct MnaSystem {
     pub num_nodes: usize,
     /// Number of voltage sources (each adds an extra unknown)
     pub num_vsources: usize,
+    /// Number of inductors (each adds an extra unknown)
+    pub num_inductors: usize,
     /// Conductance/stamp matrix (row-major, dense for now)
     pub g_matrix: Vec<f64>,
     /// Right-hand side vector
@@ -63,13 +140,18 @@ impl MnaSystem {
             .iter()
             .filter(|e| matches!(e, Element::VoltageSource { .. }))
             .count();
+        let num_inductors = elements
+            .iter()
+            .filter(|e| matches!(e, Element::Inductor { .. }))
+            .count();
 
-        let size = num_nodes + num_vsources;
+        let size = num_nodes + num_vsources + num_inductors;
 
         Self {
             size,
             num_nodes,
             num_vsources,
+            num_inductors,
             g_matrix: vec![0.0; size * size],
             b_vector: vec![0.0; size],
             x_vector: vec![0.0; size],
@@ -78,9 +160,17 @@ impl MnaSystem {
     }
 
     /// Stamp all elements into the G matrix and b vector.
-    /// `prev_voltages`: node voltages from previous timestep (for capacitor companion).
-    /// `dt`: timestep for capacitor discretization.
-    pub fn stamp_all(&mut self, prev_voltages: &[f64], dt: f64) {
+    /// `prev_voltages`: node voltages from previous timestep (for companion).
+    /// `prev_cap_currents`: past capacitor branch currents (for Trapezoidal history).
+    /// `dt`: timestep for discretization.
+    pub fn stamp_all(
+        &mut self,
+        prev_voltages: &[f64],
+        prev_cap_currents: &[f64],
+        dt: f64,
+        time: f64,
+        method: IntegrationMethod,
+    ) {
         // Clear matrices
         self.g_matrix.fill(0.0);
         self.b_vector.fill(0.0);
@@ -88,6 +178,8 @@ impl MnaSystem {
         // Clone elements to avoid borrow conflict with &mut self stamp methods
         let elements = self.elements.clone();
         let mut vsource_idx = 0;
+        let mut inductor_idx = 0;
+        let mut cap_idx = 0;
 
         for element in &elements {
             match element {
@@ -95,15 +187,22 @@ impl MnaSystem {
                     self.stamp_resistor(*a, *b, *r);
                 }
                 Element::Capacitor { a, b, c } => {
-                    self.stamp_capacitor(*a, *b, *c, prev_voltages, dt);
+                    let prev_ic = prev_cap_currents.get(cap_idx).copied().unwrap_or(0.0);
+                    self.stamp_capacitor(*a, *b, *c, prev_voltages, prev_ic, dt, method);
+                    cap_idx += 1;
                 }
-                Element::VoltageSource { pos, neg, v } => {
+                Element::Inductor { a, b, l } => {
+                    let branch = self.num_nodes + self.num_vsources + inductor_idx;
+                    self.stamp_inductor(*a, *b, *l, branch, prev_voltages, dt, method);
+                    inductor_idx += 1;
+                }
+                Element::VoltageSource { pos, neg, source } => {
                     let branch = self.num_nodes + vsource_idx;
-                    self.stamp_vsource(*pos, *neg, *v, branch);
+                    self.stamp_vsource(*pos, *neg, source.value_at(time), branch);
                     vsource_idx += 1;
                 }
-                Element::CurrentSource { pos, neg, i } => {
-                    self.stamp_current_source(*pos, *neg, *i);
+                Element::CurrentSource { pos, neg, source } => {
+                    self.stamp_current_source(*pos, *neg, source.value_at(time));
                 }
                 Element::GhostSource { node, voltage } => {
                     self.stamp_ghost(*node, *voltage);
@@ -137,15 +236,84 @@ impl MnaSystem {
         }
     }
 
-    /// Stamp a capacitor using Backward Euler companion model:
-    ///   I = C/dt * (V_n - V_{n-1})
-    ///   → equivalent conductance g_eq = C/dt
-    ///   → equivalent current source i_eq = C/dt * V_{n-1}
-    fn stamp_capacitor(&mut self, a: usize, b: usize, c: f64, prev: &[f64], dt: f64) {
+    /// Stamp an Inductor (supports BE or Trapezoidal).
+    fn stamp_inductor(
+        &mut self,
+        a: usize,
+        b: usize,
+        l: f64,
+        branch: usize,
+        prev: &[f64],
+        dt: f64,
+        method: IntegrationMethod,
+    ) {
+        if dt <= 0.0 {
+            self.stamp_vsource(a, b, 0.0, branch);
+            return;
+        }
+
+        let prev_current = if branch < prev.len() { prev[branch] } else { 0.0 };
+        
+        // TRAP needs previous voltage across L. BE does not, but computing it is cheap.
+        let va_prev = if a > 0 && (a - 1) < prev.len() { prev[a - 1] } else { 0.0 };
+        let vb_prev = if b > 0 && (b - 1) < prev.len() { prev[b - 1] } else { 0.0 };
+        let vl_prev = va_prev - vb_prev;
+
+        let (equiv_res, b_val) = match method {
+            IntegrationMethod::BackwardEuler => {
+                let eq_r = -l / dt;
+                (eq_r, eq_r * prev_current)
+            }
+            IntegrationMethod::Trapezoidal => {
+                let eq_r = -2.0 * l / dt;
+                (eq_r, eq_r * prev_current - vl_prev)
+            }
+        };
+
+        // KCL at A (+1) and B (-1)
+        if a > 0 {
+            let ai = a - 1;
+            self.g_matrix[ai * self.size + branch] += 1.0;
+            self.g_matrix[branch * self.size + ai] += 1.0;
+        }
+        if b > 0 {
+            let bi = b - 1;
+            self.g_matrix[bi * self.size + branch] -= 1.0;
+            self.g_matrix[branch * self.size + bi] -= 1.0;
+        }
+
+        self.g_matrix[branch * self.size + branch] += equiv_res;
+        self.b_vector[branch] += b_val;
+    }
+
+    /// Stamp a capacitor using Backward Euler or Trapezoidal companion models
+    fn stamp_capacitor(
+        &mut self,
+        a: usize,
+        b: usize,
+        c: f64,
+        prev_v: &[f64],
+        prev_ic: f64,
+        dt: f64,
+        method: IntegrationMethod,
+    ) {
         if dt <= 0.0 {
             return;
         }
-        let g_eq = c / dt;
+
+        let va_prev = if a > 0 && (a - 1) < prev_v.len() { prev_v[a - 1] } else { 0.0 };
+        let vb_prev = if b > 0 && (b - 1) < prev_v.len() { prev_v[b - 1] } else { 0.0 };
+
+        let (g_eq, i_eq) = match method {
+            IntegrationMethod::BackwardEuler => {
+                let g = c / dt;
+                (g, g * (va_prev - vb_prev))
+            }
+            IntegrationMethod::Trapezoidal => {
+                let g = 2.0 * c / dt;
+                (g, g * (va_prev - vb_prev) + prev_ic)
+            }
+        };
 
         // Stamp equivalent conductance (same pattern as resistor)
         if a > 0 {
@@ -165,19 +333,7 @@ impl MnaSystem {
             }
         }
 
-        // Stamp companion current source: i_eq = g_eq * V_{n-1}
-        let va_prev = if a > 0 && (a - 1) < prev.len() {
-            prev[a - 1]
-        } else {
-            0.0
-        };
-        let vb_prev = if b > 0 && (b - 1) < prev.len() {
-            prev[b - 1]
-        } else {
-            0.0
-        };
-        let i_eq = g_eq * (va_prev - vb_prev);
-
+        // Stamp companion current source
         if a > 0 {
             self.b_vector[a - 1] += i_eq;
         }
@@ -348,7 +504,7 @@ mod tests {
             Element::VoltageSource {
                 pos: 1,
                 neg: 0,
-                v: 10.0,
+                source: SourceWaveform::Dc(10.0),
             },
             Element::Resistor {
                 a: 1,
@@ -363,7 +519,7 @@ mod tests {
         ];
 
         let mut mna = MnaSystem::new(2, elements);
-        mna.stamp_all(&[], 1e-9);
+        mna.stamp_all(&[], &[], 1e-9, 1e-9, IntegrationMethod::BackwardEuler);
         assert!(mna.solve(), "Solve should succeed");
 
         let v2 = mna.node_voltage(2);
@@ -378,7 +534,7 @@ mod tests {
             Element::VoltageSource {
                 pos: 1,
                 neg: 0,
-                v: 1.8,
+                source: SourceWaveform::Dc(1.8),
             },
             Element::Resistor {
                 a: 1,
@@ -398,7 +554,7 @@ mod tests {
 
         for _step in 0..100 {
             let mut mna = MnaSystem::new(2, elements.clone());
-            mna.stamp_all(&prev, dt);
+            mna.stamp_all(&prev, &[], dt, (_step as f64 + 1.0) * dt, IntegrationMethod::BackwardEuler);
             assert!(mna.solve(), "Solve should succeed");
 
             voltages.push(mna.node_voltage(2));
@@ -443,7 +599,7 @@ mod tests {
         ];
 
         let mut mna = MnaSystem::new(2, elements);
-        mna.stamp_all(&[], 1e-9);
+        mna.stamp_all(&[], &[], 1e-9, 1e-9, IntegrationMethod::BackwardEuler);
         assert!(mna.solve(), "Solve should succeed");
 
         let v1 = mna.node_voltage(1);

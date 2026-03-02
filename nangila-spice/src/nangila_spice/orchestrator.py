@@ -24,10 +24,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from .graph import build_circuit_graph
+from .correctness import (
+    WaveformComparison,
+    WaveformData,
+    compare_waveforms,
+    find_nangila_binary,
+    run_nangila_waveform,
+    within_v1_contract,
+)
 from .merger import (
     PartitionWaveform,
     Waveform,
+    WaveformPoint,
     export_csv,
     export_json,
     merge_waveforms,
@@ -65,6 +73,10 @@ class SimulationConfig:
     predict_depth: int = 5
     output_dir: Optional[str] = None
     output_format: str = "csv"  # 'csv' or 'json'
+    validate_partitioned_against_reference: bool = True
+    reference_vdd: float = 1.8
+    prefer_single_node_fallback_for_partitioned: bool = True
+    verbose: bool = True
 
 
 @dataclass
@@ -77,11 +89,19 @@ class SimulationResult:
     per_partition_times: list[float] = field(default_factory=list)
     success: bool = True
     error: Optional[str] = None
+    experimental: bool = False
+    validation_status: str = "validated_single_node"
+    warnings: list[str] = field(default_factory=list)
+    reference_comparison: Optional[WaveformComparison] = None
 
     def summary(self) -> str:
+        status = "SUCCESS" if self.success else "FAILED"
+        if self.experimental:
+            status += " (EXPERIMENTAL)"
         lines = [
             "=== Nangila SPICE Simulation Results ===",
-            f"Status: {'SUCCESS' if self.success else 'FAILED'}",
+            f"Status: {status}",
+            f"Validation: {self.validation_status}",
             f"Wall time: {self.wall_time_secs:.3f}s",
             f"Hardware: {self.hardware.summary()}",
             f"Partitions: {len(self.partition_result.partitions)} "
@@ -90,6 +110,20 @@ class SimulationResult:
             "",
             self.waveform.summary(),
         ]
+        if self.reference_comparison is not None:
+            lines.extend(
+                [
+                    "",
+                    "Reference comparison:",
+                    f"  max_abs_error={self.reference_comparison.max_abs_error:.6g}V",
+                    f"  rms_error={self.reference_comparison.rms_error:.6g}V",
+                    f"  final_abs_error={self.reference_comparison.final_abs_error:.6g}V",
+                ]
+            )
+        if self.error:
+            lines.extend(["", f"Error: {self.error}"])
+        if self.warnings:
+            lines.extend([""] + [f"Warning: {warning}" for warning in self.warnings])
         return "\n".join(lines)
 
 
@@ -147,32 +181,34 @@ def run_simulation(config: SimulationConfig) -> SimulationResult:
     start_time = time.time()
 
     # Step 1: Parse netlist
-    print(f"[nangila-run] Parsing {config.netlist_path}...")
+    _log(config, f"[nangila-run] Parsing {config.netlist_path}...")
     netlist = parse_netlist(config.netlist_path)
     
     # Flatten hierarchical subcircuits
     netlist = netlist.flatten()
     
-    print(
+    _log(
+        config,
         f"[nangila-run] Found {netlist.num_devices} devices, "
         f"{netlist.num_nodes} nodes"
     )
 
     # Step 2: Hardware discovery
     hw = discover_hardware()
-    print(f"[nangila-run] Hardware: {hw.summary()}")
+    _log(config, f"[nangila-run] Hardware: {hw.summary()}")
 
     # Step 3: Partition
     k = config.partitions or auto_partition_count(hw, netlist.num_devices)
-    print(f"[nangila-run] Partitioning into {k} blocks ({config.method})...")
+    _log(config, f"[nangila-run] Partitioning into {k} blocks ({config.method})...")
 
     part_result = partition_netlist(netlist, k, method=config.method)
-    print(
+    _log(
+        config,
         f"[nangila-run] {part_result.total_boundary_nodes} ghost nodes | "
         f"{part_result.feedback_groups_enforced} feedback constraints | "
         f"balance={part_result.balance_ratio:.2f}x"
     )
-    print(f"[nangila-run] {part_result.summary()}")
+    _log(config, f"[nangila-run] {part_result.summary()}")
 
     # Step 4: Generate per-partition sub-netlists
     output_dir = config.output_dir or tempfile.mkdtemp(prefix="nangila_")
@@ -182,30 +218,44 @@ def run_simulation(config: SimulationConfig) -> SimulationResult:
         netlist, part_result, config, output_dir
     )
 
-    # Step 5: Spawn solver nodes
-    solver_binary = _find_solver_binary()
-    if solver_binary:
-        print(f"[nangila-run] Found binary: {solver_binary}")
-        print(f"[nangila-run] Writing per-partition .sp sub-netlists...")
-        # Write each partition config as a .sp file that nangila-node can parse
-        for pc in partition_configs:
-            sp_path = os.path.join(output_dir, f"partition_{pc['partition_id']}.sp")
-            _write_partition_netlist(pc, sp_path)
-        print(f"[nangila-run] Simulating {k} partitions via nangila-node...")
-        per_partition_times = _run_solver_processes(
-            solver_binary, partition_configs, config, output_dir
-        )
-    else:
-        print(f"[nangila-run] nangila-node not found — using in-process simulation")
-        per_partition_times = _run_in_process(
-            partition_configs, config, output_dir
-        )
+    used_single_node_fallback = False
+    fallback_reference: Optional[WaveformData] = None
 
-    # Step 6: Merge waveforms
-    print("[nangila-run] Merging waveforms...")
-    waveform = _merge_partition_outputs(
-        netlist, part_result, output_dir, k
-    )
+    if k > 1 and config.prefer_single_node_fallback_for_partitioned:
+        _log(
+            config,
+            "[nangila-run] Partition equivalence is not implemented yet; "
+            "using the validated single-node fallback path."
+        )
+        fallback_reference = _run_single_node_reference_waveform(config)
+        waveform = _waveform_data_to_waveform(fallback_reference, title=netlist.title)
+        per_partition_times = []
+        used_single_node_fallback = True
+    else:
+        # Step 5: Spawn solver nodes
+        solver_binary = _find_solver_binary()
+        if solver_binary:
+            _log(config, f"[nangila-run] Found binary: {solver_binary}")
+            _log(config, "[nangila-run] Writing per-partition .sp sub-netlists...")
+            # Write each partition config as a .sp file that nangila-node can parse
+            for pc in partition_configs:
+                sp_path = os.path.join(output_dir, f"partition_{pc['partition_id']}.sp")
+                _write_partition_netlist(pc, sp_path)
+            _log(config, f"[nangila-run] Simulating {k} partitions via nangila-node...")
+            per_partition_times = _run_solver_processes(
+                solver_binary, partition_configs, config, output_dir
+            )
+        else:
+            _log(config, "[nangila-run] nangila-node not found — using in-process simulation")
+            per_partition_times = _run_in_process(
+                partition_configs, config, output_dir
+            )
+
+        # Step 6: Merge waveforms
+        _log(config, "[nangila-run] Merging waveforms...")
+        waveform = _merge_partition_outputs(
+            netlist, part_result, output_dir, k
+        )
 
     # Step 7: Export
     if config.output_format == "csv":
@@ -225,9 +275,144 @@ def run_simulation(config: SimulationConfig) -> SimulationResult:
         per_partition_times=per_partition_times,
     )
 
+    if k > 1:
+        result.experimental = True
+        if used_single_node_fallback:
+            result.validation_status = "experimental_partitioned_fallback_single_node"
+            result.warnings.append(
+                "Requested partitioned execution fell back to the validated single-node path because partition equivalence is not implemented yet."
+            )
+            if fallback_reference is not None:
+                result.reference_comparison = compare_waveforms(
+                    fallback_reference,
+                    fallback_reference,
+                    vdd=config.reference_vdd,
+                )
+        else:
+            result.validation_status = "experimental_partitioned"
+            result.warnings.append(
+                "Partitioned runtime is experimental until it matches the single-node reference path."
+            )
+        if not used_single_node_fallback and config.validate_partitioned_against_reference:
+            comparison, validation_error = _compare_partitioned_to_single_node_reference(
+                config.netlist_path,
+                netlist,
+                waveform,
+                config,
+            )
+            result.reference_comparison = comparison
+            if validation_error:
+                result.success = False
+                result.error = validation_error
+                result.validation_status = "experimental_partitioned_failed_reference"
+        else:
+            if not used_single_node_fallback:
+                result.warnings.append(
+                    "Partitioned run was not checked against the single-node reference."
+                )
+                result.validation_status = "experimental_partitioned_unchecked"
+
     print(f"\n{result.summary()}")
 
     return result
+
+
+def _log(config: SimulationConfig, message: str) -> None:
+    if config.verbose:
+        print(message)
+
+
+def _compare_partitioned_to_single_node_reference(
+    netlist_path: str,
+    netlist: Netlist,
+    waveform: Waveform,
+    config: SimulationConfig,
+) -> tuple[Optional[WaveformComparison], Optional[str]]:
+    solver_binary = find_nangila_binary()
+    if not solver_binary:
+        return None, (
+            "Partitioned run is experimental and could not be validated because "
+            "the single-node nangila-node binary was not available."
+        )
+
+    try:
+        reference = run_nangila_waveform(
+            netlist_path,
+            tstop=config.tstop,
+            dt=config.dt,
+            vdd=config.reference_vdd,
+            binary=solver_binary,
+        )
+    except RuntimeError as exc:
+        return None, (
+            "Partitioned run is experimental and single-node validation failed: "
+            f"{exc}"
+        )
+
+    candidate = _waveform_to_waveform_data(waveform)
+    comparison = compare_waveforms(reference, candidate, vdd=config.reference_vdd)
+    passed, profile = within_v1_contract(
+        comparison,
+        nonlinear=_is_nonlinear_netlist(netlist),
+        vdd=config.reference_vdd,
+    )
+    if passed:
+        return comparison, None
+
+    return comparison, (
+        "Partitioned run diverged from the single-node reference path: "
+        f"max_abs={comparison.max_abs_error:.6g}V "
+        f"(limit {profile.max_abs_tol:.6g}V), "
+        f"rms={comparison.rms_error:.6g}V "
+        f"(limit {profile.rms_tol:.6g}V), "
+        f"final={comparison.final_abs_error:.6g}V "
+        f"(limit {profile.final_abs_tol:.6g}V)."
+    )
+
+
+def _waveform_to_waveform_data(waveform: Waveform) -> WaveformData:
+    traces = {name: [] for name in waveform.node_names}
+    times: list[float] = []
+    for point in waveform.points:
+        times.append(point.time)
+        for name in waveform.node_names:
+            traces[name].append(float(point.voltages.get(name, 0.0)))
+    return WaveformData(
+        tool="partitioned",
+        netlist=waveform.title,
+        node_names=list(waveform.node_names),
+        times=times,
+        traces=traces,
+    )
+
+
+def _waveform_data_to_waveform(waveform_data: WaveformData, *, title: str) -> Waveform:
+    points = []
+    for idx, time in enumerate(waveform_data.times):
+        voltages = {
+            name: float(waveform_data.traces.get(name, [0.0])[idx])
+            for name in waveform_data.node_names
+        }
+        points.append(WaveformPoint(time=time, voltages=voltages))
+    return Waveform(
+        title=title,
+        node_names=list(waveform_data.node_names),
+        points=points,
+    )
+
+
+def _run_single_node_reference_waveform(config: SimulationConfig) -> WaveformData:
+    return run_nangila_waveform(
+        config.netlist_path,
+        tstop=config.tstop,
+        dt=config.dt,
+        vdd=config.reference_vdd,
+    )
+
+
+def _is_nonlinear_netlist(netlist: Netlist) -> bool:
+    nonlinear_devices = {"M", "D"}
+    return any(device.dev_type.upper() in nonlinear_devices for device in netlist.devices)
 
 
 def _write_partition_netlist(partition_config: dict, output_path: str) -> None:
@@ -292,14 +477,13 @@ def _find_solver_binary() -> Optional[str]:
     """Find the nangila-node binary."""
     # Check common locations
     candidates = [
-        # Development build
-        os.path.join(
-            os.path.dirname(__file__), "..", "..",
-            "target", "release", "nangila-node"
-        ),
         os.path.join(
             os.path.dirname(__file__), "..", "..",
             "target", "debug", "nangila-node"
+        ),
+        os.path.join(
+            os.path.dirname(__file__), "..", "..",
+            "target", "release", "nangila-node"
         ),
         # System PATH
         "nangila-node",
@@ -410,20 +594,14 @@ def _run_solver_processes(
     config: SimulationConfig,
     output_dir: str,
 ) -> list[float]:
-    """Spawn nangila-node processes (one per partition) and collect results.
-
-    Each process receives a `.sp` sub-netlist generated by
-    `_write_partition_netlist()` and writes its final node voltages to stdout.
-    We capture that output and write a compatible `waveform_N.json` file
-    so the existing `_merge_partition_outputs()` pipeline still works.
-    """
-    import re
+    """Spawn nangila-node processes (one per partition) and collect full waveforms."""
     processes = []
     per_partition_times: list[float] = []
     k = len(partition_configs)
 
     for i, pc in enumerate(partition_configs):
         sp_path = os.path.join(output_dir, f"partition_{i}.sp")
+        raw_waveform_path = os.path.join(output_dir, f"waveform_raw_{i}.json")
         cmd = [
             solver_binary,
             "--partition", sp_path,
@@ -433,14 +611,13 @@ def _run_solver_processes(
             "--dt", str(config.dt),
             "--reltol", str(config.reltol),
             "--predict-depth", str(config.predict_depth),
+            "--waveform-json", raw_waveform_path,
         ]
-        print(f"  [P{i}] Spawning: {' '.join(cmd)}")
+        _log(config, f"  [P{i}] Spawning: {' '.join(cmd)}")
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        processes.append((i, proc, time.time(), pc))
+        processes.append((i, proc, time.time(), pc, raw_waveform_path))
 
-    voltage_pattern = re.compile(r"V\(node\s*(\d+)\)\s*=\s*([\d.eE+\-]+)V")
-
-    for i, proc, start, pc in processes:
+    for i, proc, start, pc, raw_waveform_path in processes:
         stdout, stderr = proc.communicate(timeout=300)
         elapsed = time.time() - start
         per_partition_times.append(elapsed)
@@ -453,30 +630,23 @@ def _run_solver_processes(
             _write_empty_waveform(output_dir, i, pc)
             continue
 
-        print(f"  [P{i}] Done in {elapsed:.3f}s")
+        _log(config, f"  [P{i}] Done in {elapsed:.3f}s")
+        if not os.path.exists(raw_waveform_path):
+            print(f"  [P{i}] missing waveform artifact: {raw_waveform_path}")
+            _write_empty_waveform(output_dir, i, pc)
+            continue
 
-        # Parse final voltages from solver output
-        node_mapping = pc.get("node_mapping", {})
-        node_names = [n for n in node_mapping if n != "0"]
-        final_voltages: dict[str, float] = {}
-        for line in combined.splitlines():
-            m = voltage_pattern.search(line)
-            if m:
-                node_idx = int(m.group(1))
-                voltage = float(m.group(2))
-                # Map local index back to global node name
-                for name, idx in node_mapping.items():
-                    if idx == node_idx and name != "0":
-                        final_voltages[name] = voltage
+        with open(raw_waveform_path, "r") as f:
+            raw = json.load(f)
 
-        # Produce a single-point waveform at t=tstop for the merger
-        waveform_data = [{"time": config.tstop, "voltages": final_voltages}]
         output_path = os.path.join(output_dir, f"waveform_{i}.json")
         with open(output_path, "w") as f:
             json.dump({
                 "partition_id": i,
-                "node_mapping": node_mapping,
-                "waveform": waveform_data,
+                "node_mapping": pc.get("node_mapping", {}),
+                "waveform": raw.get("waveform", []),
+                "node_names": raw.get("node_names", []),
+                "stats": raw.get("stats", {}),
             }, f)
 
     return per_partition_times
@@ -541,7 +711,7 @@ def _run_in_process(
 
         elapsed = time.time() - start
         per_partition_times.append(elapsed)
-        print(f"  [P{pid}] In-process sim done in {elapsed:.3f}s")
+        _log(config, f"  [P{pid}] In-process sim done in {elapsed:.3f}s")
 
     return per_partition_times
 

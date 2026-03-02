@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Nangila SPICE — Predictive-Partitioned Circuit Simulator
 
@@ -11,38 +13,50 @@ Quick start:
     print(result.waveform.summary())
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from .parser import parse_netlist, Netlist, Device, Subcircuit
-from .graph import build_circuit_graph, CircuitGraph
-from .partitioner import (
-    partition_netlist,
-    Partition,
-    PartitionResult,
-)
-from .merger import (
-    Waveform,
-    WaveformPoint,
-    merge_waveforms,
-    export_csv,
-    export_json,
-)
-from .orchestrator import (
-    discover_hardware,
-    HardwareTopology,
-    SimulationConfig,
-    SimulationResult,
-    run_simulation,
-)
-from .pvt_orchestrator import (
-    PvtOrchestrator,
-    SweepConfig,
-    SweepResult,
-    generate_corner_grid,
-    simulate_corner,
-    CornerSpec,
-    ProcessCorner,
-)
+from importlib import import_module
+from typing import Any
+
+
+_EXPORT_MAP = {
+    "parse_netlist": (".parser", "parse_netlist"),
+    "Netlist": (".parser", "Netlist"),
+    "Device": (".parser", "Device"),
+    "Subcircuit": (".parser", "Subcircuit"),
+    "build_circuit_graph": (".graph", "build_circuit_graph"),
+    "CircuitGraph": (".graph", "CircuitGraph"),
+    "partition_netlist": (".partitioner", "partition_netlist"),
+    "Partition": (".partitioner", "Partition"),
+    "PartitionResult": (".partitioner", "PartitionResult"),
+    "Waveform": (".merger", "Waveform"),
+    "WaveformPoint": (".merger", "WaveformPoint"),
+    "merge_waveforms": (".merger", "merge_waveforms"),
+    "export_csv": (".merger", "export_csv"),
+    "export_json": (".merger", "export_json"),
+    "discover_hardware": (".orchestrator", "discover_hardware"),
+    "HardwareTopology": (".orchestrator", "HardwareTopology"),
+    "SimulationConfig": (".orchestrator", "SimulationConfig"),
+    "SimulationResult": (".orchestrator", "SimulationResult"),
+    "run_simulation": (".orchestrator", "run_simulation"),
+    "PvtOrchestrator": (".pvt_orchestrator", "PvtOrchestrator"),
+    "SweepConfig": (".pvt_orchestrator", "SweepConfig"),
+    "SweepResult": (".pvt_orchestrator", "SweepResult"),
+    "generate_corner_grid": (".pvt_orchestrator", "generate_corner_grid"),
+    "simulate_corner": (".pvt_orchestrator", "simulate_corner"),
+    "CornerSpec": (".pvt_orchestrator", "CornerSpec"),
+    "ProcessCorner": (".pvt_orchestrator", "ProcessCorner"),
+    "WaveformData": (".correctness", "WaveformData"),
+    "WaveformComparison": (".correctness", "WaveformComparison"),
+    "V1ToleranceProfile": (".correctness", "V1ToleranceProfile"),
+    "compare_waveforms": (".correctness", "compare_waveforms"),
+    "find_ngspice_binary": (".correctness", "find_ngspice_binary"),
+    "find_nangila_binary": (".correctness", "find_nangila_binary"),
+    "run_ngspice_waveform": (".correctness", "run_ngspice_waveform"),
+    "run_nangila_waveform": (".correctness", "run_nangila_waveform"),
+    "v1_tolerance_profile": (".correctness", "v1_tolerance_profile"),
+    "within_v1_contract": (".correctness", "within_v1_contract"),
+}
 
 
 
@@ -54,6 +68,8 @@ def simulate(
     dt: float = 1e-12,
     output_dir: str | None = None,
     output_format: str = "csv",
+    validate_partitioned_against_reference: bool = True,
+    reference_vdd: float = 1.8,
 ) -> SimulationResult:
     """
     Run a simulation on a SPICE netlist.
@@ -72,6 +88,8 @@ def simulate(
     Returns:
         SimulationResult with merged waveform and statistics.
     """
+    SimulationConfig = __getattr__("SimulationConfig")
+    run_simulation = __getattr__("run_simulation")
     config = SimulationConfig(
         netlist_path=netlist_path,
         partitions=partitions,
@@ -80,8 +98,24 @@ def simulate(
         dt=dt,
         output_dir=output_dir,
         output_format=output_format,
+        validate_partitioned_against_reference=validate_partitioned_against_reference,
+        reference_vdd=reference_vdd,
     )
     return run_simulation(config)
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _EXPORT_MAP:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = _EXPORT_MAP[name]
+    module = import_module(module_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + list(_EXPORT_MAP.keys()))
 
 
 __all__ = [
@@ -107,4 +141,14 @@ __all__ = [
     "discover_hardware",
     "run_simulation",
     "simulate",
+    "WaveformData",
+    "WaveformComparison",
+    "V1ToleranceProfile",
+    "compare_waveforms",
+    "find_ngspice_binary",
+    "find_nangila_binary",
+    "run_ngspice_waveform",
+    "run_nangila_waveform",
+    "v1_tolerance_profile",
+    "within_v1_contract",
 ]

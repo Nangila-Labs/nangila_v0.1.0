@@ -1,0 +1,32 @@
+name: Python Install Smoke
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  install-smoke:
+    name: Install Smoke (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Import package
+        run: |
+          python -c "import nangila_spice; print(nangila_spice.__version__)"
+
+      - name: CLI help smoke
+        run: |
+          nangila run --help

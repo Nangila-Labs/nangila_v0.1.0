@@ -1,0 +1,93 @@
+name: Extended Correctness
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  NANGILA_RUN_EXTENDED_CORRECTNESS: "1"
+
+jobs:
+  extended-correctness:
+    name: Extended Correctness (c880, c1355, c1908)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts/extended-correctness
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ngspice
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Build nangila-node
+        run: cargo build -p nangila-node --bin nangila-node
+
+      - name: Run extended correctness suite
+        env:
+          PYTHONPATH: src
+        run: |
+          set -o pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          export START_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          export START_EPOCH=$(python - <<'PY'
+import time
+print(time.time())
+PY
+)
+          python -m unittest src.tests.test_correctness.ExtendedCorrectnessHarnessTests -v \
+            2>&1 | tee "$ARTIFACT_DIR/unittest.log"
+          export END_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          export END_EPOCH=$(python - <<'PY'
+import time
+print(time.time())
+PY
+)
+          python - <<'PY'
+import json
+import os
+
+start_epoch = float(os.environ["START_EPOCH"])
+end_epoch = float(os.environ["END_EPOCH"])
+summary = {
+    "benchmarks": ["c880_auto", "c1355_auto", "c1908_auto"],
+    "start_utc": os.environ["START_TS"],
+    "end_utc": os.environ["END_TS"],
+    "elapsed_seconds": end_epoch - start_epoch,
+    "workflow": "extended-correctness",
+}
+artifact_dir = os.environ["ARTIFACT_DIR"]
+with open(os.path.join(artifact_dir, "summary.json"), "w") as fh:
+    json.dump(summary, fh, indent=2)
+with open(os.path.join(artifact_dir, "summary.md"), "w") as fh:
+    fh.write("# Extended Correctness Run\n\n")
+    fh.write(f"- Benchmarks: `{', '.join(summary['benchmarks'])}`\n")
+    fh.write(f"- Start (UTC): `{summary['start_utc']}`\n")
+    fh.write(f"- End (UTC): `{summary['end_utc']}`\n")
+    fh.write(f"- Elapsed: `{summary['elapsed_seconds']:.3f}s`\n")
+PY
+        shell: bash
+
+      - name: Upload extended correctness artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extended-correctness
+          path: ${{ env.ARTIFACT_DIR }}

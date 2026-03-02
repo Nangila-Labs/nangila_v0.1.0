@@ -1,58 +1,222 @@
 # Nangila SPICE
 
-Nangila SPICE is a next-generation, highly-scalable, multi-corner SPICE circuit simulator built for massive heterogeneous computing environments. It fundamentally reimagines how transient electronic simulation is performed by combining a fast Rust-based matrix compiler with accelerated GPU linear algebra using NVIDIA cuSPARSE.
+Nangila SPICE is an open-build transient circuit simulator under active development.
 
-Built to overcome the sequential CPU bottlenecks of traditional simulator cores (such as KLU used by Ngspice and Spectre), Nangila SPICE brings Data Center-scale parallelization to deep sub-micron simulation verification.
+The current milestone is Phase 1: an oracle-validated correctness baseline for a constrained SPICE transient subset.
+
+## Status
+
+- Phase 1 is complete as a correctness milestone, not a performance milestone.
+- The single-node Rust solver is the current validated path.
+- Partitioned mode is still experimental and not part of the production claim.
+- The supported scope is a constrained SPICE transient subset focused on digital-heavy and near-digital circuits.
+
+Start here:
+
+- v1 scope and contract: [docs/v1-simulator-contract.md](/Users/craigchirara/nangila/nangila-spice/docs/v1-simulator-contract.md)
+- Phase 1 plan: [docs/phase-1-implementation-plan.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-implementation-plan.md)
+- Phase 1 benchmark report: [docs/phase-1-benchmark-report.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-benchmark-report.md)
+- Phase 1 summary note: [docs/phase-1-summary-note.md](/Users/craigchirara/nangila/nangila-spice/docs/phase-1-summary-note.md)
+
+## What It Is
+
+Nangila v1 is a transient simulator for a constrained SPICE subset, with correctness validated against `ngspice` on a documented benchmark suite.
+
+The current validated scope is:
+
+- transient analysis only
+- flattened SPICE netlists
+- `R`, `C`, `L`, independent `V/I` sources, simple diode models, and Level-1-style MOS support
+- digital-heavy transistor-level circuits, SRAM-class structures, and passive interconnect networks
+
+Nangila v1 is not yet:
+
+- a general-purpose SPICE replacement
+- broadly compatible with external `.include` and `.lib` ecosystems
+- a validated distributed simulator
+- a validated GPU-accelerated production path
+- faster than `ngspice` on the published Phase 1 benchmark suite
+
+## Validation
+
+The published Phase 1 correctness program has two tiers:
+
+- mandatory per-change gate:
+  `simple_rc`, `inverter`, `sram_6t`, `c17_full`, `c17_synth`, `c17_auto`, `c432_auto`, `s27_auto`, `s382_auto`, `s641_auto`
+- extended validation gate:
+  `c880_auto`, `c1355_auto`, `c1908_auto`
+
+All `13/13` official Phase 1 cases currently pass the v1 correctness contract against `ngspice`.
+
+Important limitation:
+
+- partitioned runs are explicitly marked experimental
+- by default, multi-partition execution falls back to the validated single-node waveform until real partition equivalence is implemented
+
+## Try This First
+
+If you want to test the project quickly, use this path:
+
+1. install the package and `ngspice`
+2. build `nangila-node`
+3. run one single-node reference circuit
+4. run the Phase 1 benchmark report
+
+Recommended first commands:
+
+```bash
+python3 -m pip install .
+brew install ngspice
+cargo build -p nangila-node --bin nangila-node
+nangila run benchmarks/reference_circuits/inverter.sp --partitions 1 --tstop 2e-9 --dt 1e-11
+nangila phase1-report
+```
+
+## Quickstart
+
+### 1. Install Python package dependencies
+
+```bash
+python3 -m pip install .
+```
+
+### 2. Install `ngspice`
+
+You need a working `ngspice` binary on your `PATH` for the oracle-backed correctness harness and the Phase 1 benchmark report.
+
+On macOS with Homebrew:
+
+```bash
+brew install ngspice
+```
+
+On Ubuntu or Debian:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ngspice
+```
+
+### 3. Build `nangila-node`
+
+The validated public path today is the CPU single-node build:
+
+```bash
+cargo build -p nangila-node --bin nangila-node
+```
+
+GPU and distributed execution are not required for the current correctness program.
+
+### 4. Run a simulation
+
+Single-node transient run:
+
+```bash
+nangila run benchmarks/reference_circuits/inverter.sp --partitions 1 --tstop 2e-9 --dt 1e-11
+```
+
+If you request partitioning, the CLI will surface the validation state explicitly.
+
+## Reproducing the Phase 1 Benchmark Report
+
+This command reproduces the published Phase 1 benchmark report locally:
+
+```bash
+nangila phase1-report --include-extended
+```
+
+It writes:
+
+- `artifacts/phase1_benchmark_report.json`
+- `artifacts/phase1_benchmark_report.md`
+
+That command runs the official Phase 1 correctness harness against `ngspice`, measures waveform error metrics, and records runtime for both the mandatory and extended validation gates.
+
+If you only want the required per-change gate, omit `--include-extended`.
+
+## Known Limitations
+
+What outside users should expect today:
+
+- `ngspice` is required for the benchmark report and oracle-backed correctness harness
+- the validated path is single-node CPU execution
+- partitioned mode is explicitly experimental and currently falls back to the validated single-node waveform by default
+- the supported SPICE subset is intentionally narrow
+- broad `.include` and `.lib` compatibility is not a v1 claim
+- GPU support is not yet a validated production path
+- current benchmark data supports correctness claims, not performance claims versus `ngspice`
+
+## Running the Correctness Gates Directly
+
+Mandatory gate:
+
+```bash
+python3 -m unittest src.tests.test_correctness.CorrectnessHarnessTests -v
+```
+
+Extended gate:
+
+```bash
+NANGILA_RUN_EXTENDED_CORRECTNESS=1 python3 -m unittest src.tests.test_correctness.ExtendedCorrectnessHarnessTests -v
+```
+
+Full Python test suite:
+
+```bash
+python3 -m unittest discover -s src/tests
+```
+
+Rust test suite:
+
+```bash
+cargo test -p nangila-node
+```
 
 ## Architecture
 
-Nangila SPICE utilizes a decoupled, high-performance architecture split across three core domains:
+The repository is split into three main areas:
 
-- **nangila-node (`Rust`)**: The heart of the simulator. A blazingly fast MNA (Modified Nodal Analysis) netlist parser and compiler. It reads standard SPICE `.sp` files, flattens subcircuit hierarchies, applies `.PARAM` directives, and compiles circuits into dense mathematical representations.
-- **nangila-cuda (`C++/CUDA`)**: The hardware acceleration backend. It takes the MNA sparse matrices generated by the Rust node and executes ultra-fast Sparse LU Factorization using `cusparseDcsrilu02` directly on the GPU execution grid.
-- **PVT Orchestrator (`Python`)**: The high-level multi-corner pipeline manager. Written for large-scale cluster execution, it broadcasts Process, Voltage, and Temperature (PVT) deltas to hundreds of parallel `nangila-node` instances simultaneously—avoiding the overhead of parsing and factoring identical base matrices $N$ times.
+- `nangila-node` (`Rust`): netlist parsing, device stamping, and the current validated single-node solver
+- `src/nangila_spice` (`Python`): orchestration, correctness harnesses, reporting, and CLI
+- `benchmarks` and `tests`: reference circuits, auto-synth decks, and correctness/integration coverage
 
-## Key Features (V1)
+## Open Build Notes
 
-- **Blazing Fast Parsing**: Completely custom standard netlist parser written in safe, concurrent Rust. Automatically handles engineering scaling suffixes, subcircuit instantiation flattening, and hierarchical naming.
-- **Robust MNA Handling**: Automatically injects global parallel pull-down GMIN resistors (100 MΩ) into every active node inside the netlist matrix to guarantee stable pivoting and prevent singular matrices from deeply nested redundant synthesis blocks.
-- **Zero-Copy FFI**: Seamless memory sharing between the Rust host application matrix memory arrays and the NVIDIA CUDA device drivers.
-- **Automated ISCAS Testing Suite**: Includes an end-to-end Python harness (`synthesize_all.py`) linking `Yosys` standard cell synthesis to directly translate ISCAS85 and ISCAS89 Verilog benchmarks into fully runnable `.sp` transistor-level netlists with automated DC operating point testing and injected `.TRAN` directives.
-- **"Delta-mode" Parallelization**: Eliminates redundant work by solving a single matrix baseline across a GPU node cluster, then broadcasting variable parameter deltas (Monte Carlo variations) for fractional-cost calculations.
+This repository is worth publishing now if it is framed honestly.
 
-## Minimum Requirements
+What is already credible:
 
-- **Rust Toolchain**: `cargo` 1.70+
-- **NVIDIA CUDA Toolkit**: Provides `nvcc` and the `cusparse` libraries.
-- **GCC/Clang**: A functioning C++ compiler capable of linking shared object libraries.
-- *(Optional)* **Yosys**: For running the Verilog-to-SPICE automated benchmark synthesis.
+- oracle-backed correctness validation against `ngspice`
+- a documented v1 scope
+- a reproducible benchmark report
+- explicit handling of experimental partitioned mode
 
-## Build Instructions
+What is still in progress:
 
-```bash
-# Build the core Nangila node with CUDA acceleration enabled
-cargo build --release --features cuda --bin nangila-node
-```
+- sparse-first solver infrastructure
+- real partition equivalence
+- GPU validation
+- performance work needed to compete with `ngspice`
 
-## Running Simulations
+## Current Roadmap
 
-Simulating a localized standard SPICE transient netlist:
+The project has completed Phase 1 and is moving into Phase 2.
 
-```bash
-cargo run --release --features cuda --bin nangila-node -- --partition path/to/your/netlist.sp
-```
+- Phase 1 complete:
+  oracle-backed correctness validation against `ngspice`
+- Phase 2 next:
+  harden the single-node production path and remove remaining placeholder behavior from production-facing execution
+- Phase 3 after that:
+  replace dense internals with sparse-first solver infrastructure
+- Later phases:
+  real partition equivalence, measured PVT, and validated GPU acceleration
 
-### Running the automated ISCAS Synthesis Pipeline:
-If you want to view Nangila's scalability against complex logical feedback paths, you can auto-synthesize the 26 standard benchmark logic models (ranging up to 22,000 transistors).
+For the full plan, see [docs/production-roadmap.md](/Users/craigchirara/nangila/nangila-spice/docs/production-roadmap.md).
 
-```bash
-cd benchmarks
-python3 synthesize_all.py
-```
-This will run `yosys`, parse the `Nangate 45nm` digital standard cell library mock mappings, and output ready-to-use `.sp` files in `benchmarks/auto_synth/`.
+## Contributing
 
-## Benchmarks & Performance
-Traditional CPU-bound State-of-the-Art (SOTA) tools can take 12-24 hours to execute a $1,000,000$-step continuous transient loop on highly stiff logical feedback circuits like the ISCAS 16-bit multiplier. Nangila SPICE utilizes cuSPARSE to reduce average factorizations to sub `3ms` per round trip, finishing equivalent full runs in approximately **50 minutes on an L40S GPU**—a massive $\sim$15x speedup without any algorithmic approximation.
+See [CONTRIBUTING.md](/Users/craigchirara/nangila/nangila-spice/CONTRIBUTING.md).
 
 ## License
-Provided "as-is" for the purpose of research and peer-reviewed evaluation.
+
+MIT. See [LICENSE](/Users/craigchirara/nangila/nangila-spice/LICENSE).

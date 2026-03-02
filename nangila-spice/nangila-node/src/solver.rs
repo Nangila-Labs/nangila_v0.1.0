@@ -16,6 +16,8 @@ use crate::ngspice_ffi::{PartitionNetlist, SolverBackend, SolverEngine};
 pub struct PartitionState {
     /// Node voltages (indexed by local node ID)
     pub voltages: Vec<f64>,
+    /// Historical capacitor currents (Tracked for Trapezoidal integration)
+    pub cap_currents: Vec<f64>,
     /// Current simulation time
     pub time: f64,
     /// Whether this state has been validated (residuals checked)
@@ -26,6 +28,7 @@ impl PartitionState {
     pub fn new(num_nodes: usize) -> Self {
         Self {
             voltages: vec![0.0; num_nodes],
+            cap_currents: Vec::new(),
             time: 0.0,
             validated: false,
         }
@@ -121,9 +124,10 @@ impl TransientSolver {
     pub fn run(&mut self) -> (PartitionState, SimStats) {
         let start = std::time::Instant::now();
 
-        let mna_size = self.get_mna_size();
-        let mut state = PartitionState::new(mna_size);
+        let mut state = self.engine.initial_state();
         let mut step = 0u64;
+        self.waveform.clear();
+        self.waveform.push((state.time, state.voltages.clone()));
 
         info!(
             "Starting transient simulation: tstop={:.2e}s, dt={:.2e}s, steps={}",
@@ -238,17 +242,12 @@ impl TransientSolver {
         self.waveform.retain(|(t, _)| *t <= target_time);
         None
     }
-
-    /// Get the MNA system size (nodes + voltage source branch currents).
-    fn get_mna_size(&self) -> usize {
-        self.engine.size()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mna::Element;
+    use crate::mna::{Element, SourceWaveform};
 
     #[test]
     fn test_transient_rc_simulation() {
@@ -260,7 +259,7 @@ mod tests {
                 Element::VoltageSource {
                     pos: 1,
                     neg: 0,
-                    v: 1.8,
+                    source: SourceWaveform::Dc(1.8),
                 },
                 Element::Resistor {
                     a: 1,
@@ -274,6 +273,8 @@ mod tests {
                 },
             ],
             ghost_map: vec![],
+            node_names: vec!["vdd".into(), "out".into()],
+            initial_conditions: vec![],
         };
 
         let ghosts = GhostBuffer::new();
@@ -300,6 +301,12 @@ mod tests {
             "V(cap) after 10*tau should be near 1.8V, got {last_v2}"
         );
 
+        let first_step_v2 = solver.waveform.get(1).map(|(_, v)| v[1]).unwrap_or(0.0);
+        assert!(
+            first_step_v2 > 0.15,
+            "First RC step should use a stable companion model, got {first_step_v2}"
+        );
+
         // Waveform should show monotonic charging
         for i in 1..solver.waveform.len() {
             assert!(
@@ -318,7 +325,7 @@ mod tests {
                 Element::VoltageSource {
                     pos: 1,
                     neg: 0,
-                    v: 1.0,
+                    source: SourceWaveform::Dc(1.0),
                 },
                 Element::Resistor {
                     a: 1,
@@ -332,6 +339,8 @@ mod tests {
                 },
             ],
             ghost_map: vec![],
+            node_names: vec!["vin".into(), "n1".into()],
+            initial_conditions: vec![],
         };
 
         let config = SimConfig {

@@ -4,3 +4,6 @@
 /.pytest_cache/
 *.pyc
 *.pyo
+.DS_Store
+artifacts/
+*.egg-info/
