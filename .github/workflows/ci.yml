@@ -1,46 +1,61 @@
-name: CI
+name: v0.1 CI
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
+  rust-tests:
+    name: Rust Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo test
+        run: cargo test
+
+  python-smoke:
+    name: Python Smoke (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          components: rustfmt, clippy
-      
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Run tests
-        run: cargo test --workspace --exclude nangila-cuda
-      
-      - name: Run clippy
-        run: cargo clippy --workspace --exclude nangila-cuda -- -D warnings
-        continue-on-error: true
+          python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Create virtual environment
+        run: python -m venv .venv
+      - name: Install build and test dependencies
+        run: |
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install maturin pytest
+        shell: bash
+      - name: Install nangila in editable mode
+        run: |
+          source .venv/bin/activate
+          maturin develop --release -F python
+        shell: bash
+      - name: Run Python smoke tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest -q
+        shell: bash
 
   fmt:
-    name: Format Check
+    name: Rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,57 +63,3 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
-
-  build-wheels:
-    name: Build Wheels
-    needs: test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ['3.10', '3.11', '3.12']
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      
-      - name: Install maturin
-        run: pip install maturin
-      
-      - name: Build wheel
-        run: |
-          cd ${{ github.workspace }}
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release -F python
-      
-      - name: Upload wheel
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: target/wheels/*.whl
-
-  # Run on release tags
-  release:
-    name: Publish to PyPI
-    needs: build-wheels
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Download all wheels
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: wheel-*
-          merge-multiple: true
-      
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}

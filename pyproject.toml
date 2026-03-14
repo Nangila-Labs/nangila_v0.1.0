@@ -43,7 +43,16 @@ Documentation = "https://github.com/nangila/nangila#readme"
 Repository = "https://github.com/nangila/nangila"
 
 [tool.maturin]
-features = ["pyo3/extension-module", "cuda", "python"]
+features = ["python"]
 python-source = "python"
 module-name = "nangila"
 manifest-path = "nangila-hook/Cargo.toml"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["tests/smoke", "tests/integration"]
+norecursedirs = ["examples", "examples/experimental", "target", ".venv"]
+markers = [
+    "integration: requires distributed or GPU test infrastructure",
+]

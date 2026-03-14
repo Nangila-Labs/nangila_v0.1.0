@@ -95,8 +95,6 @@ impl Default for MemoryMode {
 pub struct Predictor {
     /// Base momentum coefficient (typically 0.9)
     momentum: f32,
-    /// Momentum as fixed-point for deterministic computation
-    momentum_q: Q8_23,
     /// Per-layer gradient history (stored in fixed-point)
     history: HashMap<LayerId, LayerHistory>,
     /// Current step count
@@ -136,7 +134,6 @@ impl Predictor {
     pub fn new(momentum: f32, warmup_steps: usize) -> Self {
         Self {
             momentum,
-            momentum_q: Q8_23::from_f32(momentum),
             history: HashMap::new(),
             step: 0,
             warmed_up: false,

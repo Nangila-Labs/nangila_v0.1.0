@@ -1,124 +1,78 @@
 # Nangila Testing Guide
 
-## Quick Start
+This file documents the active `v0.1` test layout and local validation flow.
 
-### Prerequisites
-- 2+ NVIDIA GPUs with CUDA 12.0+
-- Python 3.8+
-- PyTorch 2.0+
-- Rust 1.70+
+## Default `v0.1` baseline
 
-### Setup on GPU Server
+Use the documented release-check path for the stable local baseline:
 
 ```bash
-# 1. Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-
-# 2. Install Python dependencies
-pip3 install maturin torch pytest numpy
-
-# 3. Build Nangila with CUDA support
-cd ~/nangila
-maturin develop --release --features cuda
-
-# 4. Run test suite
-bash tests/gpu_test_suite.sh
+make release-check
 ```
 
-## Test Suite
+That runs:
+- `cargo test`
+- a local `.venv` setup
+- `maturin develop --release -F python`
+- `python -m pytest -q`
 
-The test suite (`tests/gpu_test_suite.sh`) runs:
+## Test layout
 
-1. **SyncMode.ALWAYS Test** - Catch all errors immediately
-2. **Stress Test** - 1000 iterations to verify stability
-3. **Benchmark** - Compare ASYNC vs PERIODIC vs ALWAYS overhead
-4. **SyncMode.PERIODIC Test** - Production default mode
-5. **Python Unit Tests** - pytest test suite
+- `tests/smoke/`: the default green baseline for `v0.1`
+- `tests/integration/`: opt-in distributed, GPU-heavy, and benchmark-oriented validation
 
-## Manual Testing
+Pytest is configured to skip integration collection unless `NANGILA_RUN_INTEGRATION=1` is set.
 
-### Test Individual Sync Modes
+## Manual commands
 
-```python
-from nangila import SyncMode
-from nangila.ddp import register_nangila_hook
-
-# Test ALWAYS mode (debug)
-hook = register_nangila_hook(model, sync_mode=SyncMode.ALWAYS)
-
-# Test PERIODIC mode (default)
-hook = register_nangila_hook(model, sync_mode=SyncMode.PERIODIC)
-
-# Test ASYNC mode (production)
-hook = register_nangila_hook(model, sync_mode=SyncMode.ASYNC)
-```
-
-### Run DDP Test
+### Rust workspace tests
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 tests/test_ddp_gpu.py
+cargo test
 ```
 
-### Run Stress Test
+### Python smoke tests
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 tests/verify_overfit.py
+python3 -m venv .venv
+./.venv/bin/python -m pip install maturin pytest
+./.venv/bin/maturin develop --release -F python
+./.venv/bin/python -m pytest -q
 ```
 
-## Expected Results
+### Integration collection
 
-### Compilation
-- All Rust code compiles without errors
-- Python module builds successfully
+```bash
+NANGILA_RUN_INTEGRATION=1 python -m pytest
+```
 
-### Tests
-- All unit tests pass
-- DDP gradients sync correctly across ranks
-- No CUDA errors with ALWAYS mode
-- Compression ratio: 20-40×
-- Stress test: 1000 iterations without errors
+### GPU and distributed validation
 
-### Performance
-- ASYNC: ~0% overhead
-- PERIODIC: ~1-2% overhead
-- ALWAYS: ~10-20% overhead
+Examples live under [`tests/integration/`](/Users/craigchirara/nangila/tests/integration/), including:
+- [`tests/integration/test_cuda_single_gpu_smoke.py`](/Users/craigchirara/nangila/tests/integration/test_cuda_single_gpu_smoke.py)
+- [`tests/integration/gpu_test_suite.sh`](/Users/craigchirara/nangila/tests/integration/gpu_test_suite.sh)
+- [`tests/integration/test_ddp_correctness.py`](/Users/craigchirara/nangila/tests/integration/test_ddp_correctness.py)
+- [`tests/integration/test_stress.py`](/Users/craigchirara/nangila/tests/integration/test_stress.py)
 
-## Troubleshooting
+These are not part of the default `v0.1` support baseline.
 
-### CUDA Errors
+### Single-GPU CUDA smoke
 
-If you see CUDA errors:
-1. Switch to `SyncMode.ALWAYS` to get immediate error messages
-2. Check GPU memory with `nvidia-smi`
-3. Verify CUDA version: `nvcc --version`
-4. Check error messages for specific issues
+If you only have a 1-GPU allocation, you can still run a CUDA pre-qualification pass:
 
-### Build Errors
+```bash
+# load cluster CUDA toolkit first if needed, then:
+bash scripts/cuda_single_gpu_smoke.sh
+```
 
-If build fails:
-1. Ensure CUDA is in PATH: `export PATH=/usr/local/cuda/bin:$PATH`
-2. Check Rust version: `rustc --version` (need 1.70+)
-3. Try clean build: `cargo clean && maturin develop --release --features cuda`
+This runner auto-resolves `CUDA_HOME`/`CUDA_PATH`, sets `LD_LIBRARY_PATH` for CUDA runtime
+loading, and performs a Slurm memory sanity check before invoking `torchrun`.
 
-### Import Errors
+That validates CUDA build/import, single-rank NCCL setup, and stable DDP hook registration on one GPU.
+It does not replace the 2-GPU DDP correctness gate for `v0.1`.
 
-If Python can't import nangila:
-1. Verify build succeeded
-2. Check Python version matches build
-3. Try: `pip3 install -e .`
+## Related docs
 
-## Next Steps
-
-After all tests pass:
-1. Review benchmark results
-2. Choose sync mode for production (recommend PERIODIC)
-3. Run with your actual model
-4. Monitor compression ratio and performance
-
-## Questions?
-
-See:
-- `README.md` - Usage guide
-- `CHANGELOG.md` - Recent changes
-- `tests/test_cuda_error_handling.py` - Test examples
+- [`README.md`](/Users/craigchirara/nangila/README.md)
+- [`docs/releases/v0.1-support-matrix.md`](/Users/craigchirara/nangila/docs/releases/v0.1-support-matrix.md)
+- [`docs/releases/release-checklist.md`](/Users/craigchirara/nangila/docs/releases/release-checklist.md)

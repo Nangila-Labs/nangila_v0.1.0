@@ -335,7 +335,6 @@ impl GradientHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Q8_23;
 
     #[test]
     fn test_gradient_history() {

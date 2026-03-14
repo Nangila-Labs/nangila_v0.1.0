@@ -57,8 +57,6 @@ pub struct Quantizer {
     gamma_momentum: f32,
     /// RNG seed for stochastic rounding (None = deterministic)
     rng_seed: Option<u64>,
-    /// Counter for reproducible randomness
-    rng_counter: u64,
 }
 
 impl Quantizer {
@@ -71,7 +69,6 @@ impl Quantizer {
             gamma_ema: 1.0,
             gamma_momentum: 0.99,
             rng_seed: Some(42), // Default: stochastic with fixed seed
-            rng_counter: 0,
         }
     }
 

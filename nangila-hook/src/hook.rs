@@ -262,15 +262,39 @@ impl NangilaHook {
         }
 
         // Handle by packet type
-        if packet.header.is_passenger() {
-            self.reconstruct_passenger(layer_id)
-        } else if !self.state.is_compression_enabled() {
-            // Warmup: passthrough
-            self.deserialize_tensor_payload(&packet.payload)
-        } else {
-            // Normal compressed driver
-            self.reconstruct_driver(layer_id, &packet.payload)
+        self.decode_packet_payload(layer_id, &packet)
+    }
+
+    /// Decode a gathered packet without peer-step tracking.
+    ///
+    /// DDP all-gather paths receive one packet per rank for the same logical step,
+    /// so the peer-step monotonicity check in `on_receive` would incorrectly mark
+    /// the second packet as stale. This helper validates the packet and decodes
+    /// the payload while intentionally skipping expected-peer-step bookkeeping.
+    pub fn on_receive_gathered(&mut self, layer_id: LayerId, data: &[u8]) -> Tensor {
+        let packet = match Packet::from_bytes(data) {
+            Some(p) => p,
+            None => {
+                tracing::error!("Failed to parse gathered packet for layer {}", layer_id);
+                return Tensor::zeros(vec![1]);
+            }
+        };
+
+        if !packet.header.is_valid() {
+            tracing::error!("Invalid gathered packet header for layer {}", layer_id);
+            return Tensor::zeros(vec![1]);
         }
+
+        if !packet.verify() {
+            tracing::warn!("CRC mismatch for gathered packet on layer {}", layer_id);
+            return self.recover_from_history(layer_id);
+        }
+
+        if packet.header.is_force_sync() {
+            return self.handle_force_sync(layer_id, &packet);
+        }
+
+        self.decode_packet_payload(layer_id, &packet)
     }
 
     /// Update state after All-Reduce completes
@@ -596,6 +620,16 @@ impl NangilaHook {
         self.recovery_mode.insert(layer_id, RecoveryMode::Normal);
 
         gradient
+    }
+
+    fn decode_packet_payload(&mut self, layer_id: LayerId, packet: &Packet) -> Tensor {
+        if packet.header.is_passenger() {
+            self.reconstruct_passenger(layer_id)
+        } else if !self.state.is_compression_enabled() {
+            self.deserialize_tensor_payload(&packet.payload)
+        } else {
+            self.reconstruct_driver(layer_id, &packet.payload)
+        }
     }
 
     fn recover_from_history(&self, layer_id: LayerId) -> Tensor {

@@ -1,0 +1,76 @@
+name: v0.1 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to create, for example v0.1.0
+        required: true
+        type: string
+      create_release:
+        description: Draft a GitHub release after tagging
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-tag-release:
+    name: Validate, Tag, and Draft Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate requested version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in
+            v*) ;;
+            *)
+              echo "Version must start with 'v', for example v0.1.0"
+              exit 1
+              ;;
+          esac
+          grep -q "^## ${VERSION} - " CHANGELOG.md || {
+            echo "CHANGELOG.md is missing an entry for ${VERSION}"
+            exit 1
+          }
+
+      - name: Run release validation
+        run: make release-check
+
+      - name: Create and push annotated tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git rev-parse "$VERSION" >/dev/null 2>&1 && {
+            echo "Tag ${VERSION} already exists"
+            exit 1
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "Nangila ${VERSION}"
+          git push origin "$VERSION"
+
+      - name: Draft GitHub release
+        if: ${{ inputs.create_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Nangila ${{ inputs.version }}
+          draft: true
+          generate_release_notes: true

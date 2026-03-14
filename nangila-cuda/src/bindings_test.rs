@@ -4,7 +4,8 @@
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::bindings::CudaError;
+    use crate::{dequantize_and_reconstruct_cuda, predict_and_quantize_cuda, SyncMode};
 
     #[test]
     fn test_sync_mode_default() {
@@ -58,6 +59,8 @@ mod tests {
                 100,
                 std::ptr::null_mut(),
                 SyncMode::Async,
+                0,
+                0,
             );
 
             assert!(result.is_err());
@@ -102,6 +105,8 @@ mod tests {
                 100,
                 std::ptr::null_mut(),
                 SyncMode::Async,
+                0,
+                0,
             );
 
             assert!(result.is_err());
@@ -128,6 +133,8 @@ mod tests {
                 0, // Invalid: zero size
                 std::ptr::null_mut(),
                 SyncMode::Async,
+                0,
+                0,
             );
 
             assert!(result.is_err());
@@ -154,6 +161,8 @@ mod tests {
                 100,
                 std::ptr::null_mut(),
                 SyncMode::Async,
+                0,
+                0,
             );
 
             // Should not fail due to clamping
@@ -170,6 +179,8 @@ mod tests {
                 100,
                 std::ptr::null_mut(),
                 SyncMode::Async,
+                0,
+                0,
             );
 
             assert!(result.is_err());
@@ -196,6 +207,8 @@ mod tests {
                 100,
                 std::ptr::null_mut(),
                 SyncMode::Async,
+                0,
+                0,
             );
 
             assert!(result.is_err());
@@ -212,6 +225,8 @@ mod tests {
                 100,
                 std::ptr::null_mut(),
                 SyncMode::Async,
+                0,
+                0,
             );
 
             assert!(result.is_err());

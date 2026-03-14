@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use nangila_core::{Sculptor, Tensor, TopologyMask, TopologyReport};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::PathBuf;
 
 #[derive(Parser)]

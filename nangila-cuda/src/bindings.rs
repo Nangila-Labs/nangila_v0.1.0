@@ -132,10 +132,15 @@ extern "C" {
     ) -> i32;
 }
 
+#[allow(non_upper_case_globals)]
 pub const cudaMemcpyHostToHost: i32 = 0;
+#[allow(non_upper_case_globals)]
 pub const cudaMemcpyHostToDevice: i32 = 1;
+#[allow(non_upper_case_globals)]
 pub const cudaMemcpyDeviceToHost: i32 = 2;
+#[allow(non_upper_case_globals)]
 pub const cudaMemcpyDeviceToDevice: i32 = 3;
+#[allow(non_upper_case_globals)]
 pub const cudaMemcpyDefault: i32 = 4;
 
 /// Check for CUDA errors after kernel launch

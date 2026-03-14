@@ -7,8 +7,8 @@ use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use nangila_core::{NangilaConfig, Sculptor as RustSculptor, Tensor, TopologyMask};
 use nangila_core::config::CompressorType;
+use nangila_core::{NangilaConfig, Sculptor as RustSculptor, Tensor, TopologyMask};
 
 use crate::hook::NangilaHook as RustHook;
 
@@ -433,6 +433,20 @@ impl PyNangilaHook {
         data: &[u8],
     ) -> Bound<'py, PyArray1<f32>> {
         let tensor = self.inner.on_receive(layer_id, data);
+        PyArray1::from_vec_bound(py, tensor.data)
+    }
+
+    /// Decompress data that was received through an all-gather path.
+    ///
+    /// This skips peer-step monotonicity checks because the hook may decode
+    /// multiple packets for the same logical step, one per rank.
+    fn decompress_gathered<'py>(
+        &mut self,
+        py: Python<'py>,
+        layer_id: u32,
+        data: &[u8],
+    ) -> Bound<'py, PyArray1<f32>> {
+        let tensor = self.inner.on_receive_gathered(layer_id, data);
         PyArray1::from_vec_bound(py, tensor.data)
     }
 

@@ -1,0 +1,70 @@
+version = "0.1.0"
+name = "nangila_v01"
+python_package = "nangila"
+git_tag = "v0.1.0"
+
+[scope]
+stable_surface = [
+  "nangila-core",
+  "nangila-cuda",
+  "nangila-hook",
+  "python/nangila",
+  "tests/smoke",
+  "tests/integration/test_cuda_single_gpu_smoke.py",
+  "tests/integration/test_ddp_correctness.py",
+  "docs/releases",
+]
+experimental_surface = [
+  "python/nangila/experimental.py",
+  "examples/experimental",
+]
+
+[validation]
+local = [
+  "make release-check",
+]
+gpu = [
+  "bash scripts/cuda_single_gpu_smoke.sh",
+  "CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run --standalone --nproc_per_node=2 tests/integration/test_ddp_correctness.py",
+]
+
+[commit_scope]
+# Paths listed here are the intended file-level boundary for the v0.1 release
+# commit. The checker treats directory entries as recursive prefixes.
+allow = [
+  ".github/workflows/ci.yml",
+  ".github/workflows/release.yml",
+  ".gitignore",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "Cargo.toml",
+  "Cargo.lock",
+  "Makefile",
+  "README.md",
+  "TESTING.md",
+  "pyproject.toml",
+  "docs/releases/",
+  "docs/archive/",
+  "docs/strategy/",
+  "docs/README.md",
+  "examples/README.md",
+  "examples/experimental/",
+  "nangila-core/",
+  "nangila-cuda/",
+  "nangila-hook/",
+  "nangila-dump/",
+  "nangila-profile/",
+  "python/nangila/__init__.py",
+  "python/nangila/ddp.py",
+  "python/nangila/experimental.py",
+  "python/nangila/nangila.pyi",
+  "python/nangila/py.typed",
+  "scripts/cuda_single_gpu_smoke.sh",
+  "scripts/deploy_and_benchmark.sh",
+  "tests/README.md",
+  "tests/conftest.py",
+  "tests/smoke/",
+  "tests/integration/test_cuda_single_gpu_smoke.py",
+  "tests/integration/test_ddp_correctness.py",
+  "nangila_v01/",
+]

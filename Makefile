@@ -1,5 +1,5 @@
 
-.PHONY: install clean test check
+.PHONY: all install clean test check python-smoke release-check
 
 # Default target
 all: install
@@ -30,3 +30,16 @@ test:
 # Check code formatting (if tools available)
 check:
 	cargo check
+
+# Run the v0.1 Python smoke baseline in a local virtualenv
+python-smoke:
+	python3 -m venv .venv
+	./.venv/bin/python -m pip install --upgrade pip
+	./.venv/bin/python -m pip install maturin pytest
+	./.venv/bin/maturin develop --release -F python
+	./.venv/bin/python -m pytest -q
+
+# Run the documented local release validation flow for v0.1.x
+release-check:
+	cargo test
+	$(MAKE) python-smoke

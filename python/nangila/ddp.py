@@ -1,8 +1,16 @@
 """
 Nangila DDP Communication Hook for PyTorch
 
-This module provides a PyTorch-native way to integrate Nangila gradient
-compression with DistributedDataParallel (DDP) training.
+This module provides the supported v0.1 DDP integration surface.
+
+Stable v0.1 knobs:
+- threshold
+- warmup_steps
+- prefer_cpp
+- sync_mode
+
+Advanced compressor-selection knobs remain available for compatibility,
+but non-default values are excluded from the v0.1 stable support contract.
 
 Usage:
     from nangila.ddp import register_nangila_hook
@@ -26,7 +34,8 @@ Usage:
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from typing import Optional, Callable, Any
+from typing import Optional, Any
+import warnings
 
 try:
     from .nangila import NangilaHook, NangilaConfig, SyncMode
@@ -56,20 +65,36 @@ except ImportError:
         GradBucket = Any
 
 
+def _warn_if_advanced_ddp_options(
+    compressor_type: int,
+    dgc_sparsity: float,
+    power_sgd_rank: int,
+) -> None:
+    if compressor_type != 0 or dgc_sparsity != 0.999 or power_sgd_rank != 1:
+        warnings.warn(
+            "Non-default DDP compressor tuning options are available for compatibility but are "
+            "excluded from the Nangila v0.1 stable support contract.",
+            stacklevel=3,
+        )
+
 
 class NangilaDDPHook:
     """
-    DDP communication hook that compresses gradients using Nangila.
+    DDP communication hook for Nangila's v0.1 integration path.
     
     This hook intercepts gradient synchronization in PyTorch DDP and
     applies Nangila's predictive compression to reduce bandwidth usage.
     
     Args:
         process_group: PyTorch distributed process group (default: global)
-        threshold: Compression quality threshold (0.90-0.99)
+        threshold: Stable v0.1 compression-quality knob (0.90-0.99)
         warmup_steps: Steps before compression activates
         num_layers: Estimated number of gradient layers
         sync_mode: CUDA kernel synchronization mode (SyncMode.ASYNC, ALWAYS, or PERIODIC)
+        enable_gpu_native: Experimental compatibility option. Disabled by default for v0.1.
+        compressor_type: Advanced compatibility option, excluded from v0.1 stable support
+        dgc_sparsity: Advanced compatibility option, excluded from v0.1 stable support
+        power_sgd_rank: Advanced compatibility option, excluded from v0.1 stable support
     """
     
     def __init__(
@@ -79,6 +104,8 @@ class NangilaDDPHook:
         warmup_steps: int = 100,
         num_layers: int = 1000,
         sync_mode: int = 2,  # SyncMode.PERIODIC
+        enable_gpu_native: bool = False,
+        *,
         compressor_type: int = 0,
         dgc_sparsity: float = 0.999,
         power_sgd_rank: int = 1,
@@ -88,12 +115,15 @@ class NangilaDDPHook:
         """
         if not NANGILA_AVAILABLE:
             raise ImportError("Nangila is not available. Install with: pip install nangila")
+
+        _warn_if_advanced_ddp_options(compressor_type, dgc_sparsity, power_sgd_rank)
         
         self.process_group = process_group or dist.distributed_c10d._get_default_group()
         self.threshold = threshold
         self.warmup_steps = warmup_steps
         self.step_count = 0
         self.sync_mode = sync_mode
+        self.enable_gpu_native = enable_gpu_native
         
         # Create Nangila hook
         # Get CompressorType logic
@@ -121,6 +151,7 @@ class NangilaDDPHook:
         self.hook = NangilaHook.all_drivers(num_layers)
         self.layer_counter = 0
         self.step_count = 0
+        self._gpu_mode_enabled = False
         
         # Track compression stats
         self.total_original_bytes = 0
@@ -132,6 +163,11 @@ class NangilaDDPHook:
             print(f"Nangila DDP Hook initialized with sync_mode={sync_mode_name}")
             if sync_mode == 0:  # ASYNC
                 print("  WARNING: ASYNC mode has no error checking. Use PERIODIC or ALWAYS for debugging.")
+        
+        # GPU-native compression remains experimental for the Python hook.
+        # Keep it opt-in so the stable v0.1 path stays on the correct CPU fallback.
+        if self.enable_gpu_native and torch.cuda.is_available():
+            self._gpu_mode_enabled = self._ensure_gpu_mode_enabled()
     
     def __call__(self, state: Any, bucket: GradBucket) -> torch.futures.Future[torch.Tensor]:
         """
@@ -163,7 +199,12 @@ class NangilaDDPHook:
             # === NANGILA GPU-NATIVE COMPRESSION ===
             
             # Check if we can use GPU-native path
-            if tensor.is_cuda and hasattr(self.hook, 'compress_gpu'):
+            if (
+                self.enable_gpu_native
+                and tensor.is_cuda
+                and hasattr(self.hook, 'compress_gpu')
+                and self._ensure_gpu_mode_enabled()
+            ):
                 fut = self._compress_gpu_native(tensor, layer_id)
             else:
                 # Fallback to CPU path (slow but works)
@@ -176,6 +217,21 @@ class NangilaDDPHook:
             import traceback
             traceback.print_exc()
             raise e
+
+    def _ensure_gpu_mode_enabled(self) -> bool:
+        """Best-effort GPU mode activation for GPU-native compression."""
+        if self._gpu_mode_enabled:
+            return True
+        if not hasattr(self.hook, "set_gpu_mode"):
+            return False
+        try:
+            self.hook.set_gpu_mode(True)
+            self._gpu_mode_enabled = True
+            return True
+        except Exception as e:
+            if dist.is_available() and dist.is_initialized() and dist.get_rank() == 0:
+                print(f"WARNING: failed to enable Nangila GPU mode ({e}); falling back to CPU hook path.")
+            return False
     
     def _compress_gpu_native(self, tensor: torch.Tensor, layer_id: int) -> torch.futures.Future[torch.Tensor]:
         """GPU-native compression path - keeps data on GPU throughout"""
@@ -250,7 +306,9 @@ class NangilaDDPHook:
         
         # Pad local compressed data to max_size
         padded_compressed = torch.zeros(max_size, dtype=torch.uint8, device=tensor.device)
-        local_tensor = torch.frombuffer(compressed_bytes, dtype=torch.uint8).to(tensor.device)
+        local_tensor = torch.frombuffer(
+            bytearray(compressed_bytes), dtype=torch.uint8
+        ).to(tensor.device)
         padded_compressed[:len(compressed_bytes)] = local_tensor
         
         # All-gather compressed tensors
@@ -263,7 +321,7 @@ class NangilaDDPHook:
         for i, comp_tensor in enumerate(gathered_tensors):
             actual_size = all_sizes[i].item()
             comp_bytes = bytes(comp_tensor[:actual_size].cpu().numpy())
-            res_np = self.hook.decompress(layer_id, comp_bytes)
+            res_np = self.hook.decompress_gathered(layer_id, comp_bytes)
             decompressed_list.append(res_np)
         
         # 4. Stack and average on CPU
@@ -360,28 +418,31 @@ def register_nangila_hook(
     warmup_steps: int = 100,
     prefer_cpp: bool = True,
     sync_mode: int = 2,  # SyncMode.PERIODIC
-    compressor_type: int = 0, # CompressorType.PredictionResidual
+    enable_gpu_native: bool = False,
+    *,
+    compressor_type: int = 0, # Advanced compatibility option
     dgc_sparsity: float = 0.999,
     power_sgd_rank: int = 1,
 ) -> "NangilaDDPHook":
     """
-    Register Nangila compression hook with a DDP model.
+    Register the Nangila v0.1 DDP compression hook with a DDP model.
     
     Automatically uses native C++ hook if available (recommended for production),
     otherwise falls back to Python implementation.
     
     Args:
         ddp_model: A DistributedDataParallel wrapped model
-        threshold: Compression quality threshold (0.90-0.99)
-        warmup_steps: Steps before compression activates
-        prefer_cpp: If True, use C++ hook when available (default: True)
+        threshold: Stable v0.1 compression-quality knob (0.90-0.99)
+        warmup_steps: Stable v0.1 warmup control
+        prefer_cpp: Stable v0.1 runtime-selection knob
         sync_mode: CUDA kernel synchronization mode
             - SyncMode.ASYNC (0): No sync, maximum performance (production)
             - SyncMode.ALWAYS (1): Always sync, catch all errors (debug)
             - SyncMode.PERIODIC (2): Sync every 100 calls (default, balanced)
-        compressor_type: CompressorType (0=PredictionResidual, 1=DGC, 2=PowerSGD)
-        dgc_sparsity: Sparsity for DGC compressor (default 0.999)
-        power_sgd_rank: Rank for PowerSGD compressor (default 1)
+        enable_gpu_native: Experimental GPU-native Python hook path. Disabled by default for v0.1
+        compressor_type: Advanced compatibility option, excluded from v0.1 stable support
+        dgc_sparsity: Advanced compatibility option, excluded from v0.1 stable support
+        power_sgd_rank: Advanced compatibility option, excluded from v0.1 stable support
     
     Returns:
         Hook instance (call .step() after each optimizer step)
@@ -408,6 +469,8 @@ def register_nangila_hook(
     """
     if not isinstance(ddp_model, DDP):
         raise TypeError(f"Expected DistributedDataParallel, got {type(ddp_model)}")
+
+    _warn_if_advanced_ddp_options(compressor_type, dgc_sparsity, power_sgd_rank)
     
     # Estimate number of layers from model parameters
     num_layers = len(list(ddp_model.parameters()))
@@ -432,6 +495,7 @@ def register_nangila_hook(
         warmup_steps=warmup_steps,
         num_layers=num_layers,
         sync_mode=sync_mode,
+        enable_gpu_native=enable_gpu_native,
         compressor_type=compressor_type,
         dgc_sparsity=dgc_sparsity,
         power_sgd_rank=power_sgd_rank,
@@ -447,4 +511,3 @@ def register_nangila_hook(
 
 
 __all__ = ['NangilaDDPHook', 'register_nangila_hook', 'CPP_HOOK_AVAILABLE']
-

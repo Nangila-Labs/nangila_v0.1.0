@@ -3,8 +3,9 @@
 //! This module manages GPU-resident history buffers for gradient prediction,
 //! eliminating the need for CPU round-trips.
 
-use crate::bindings::{CudaError, CudaResult, CudaStream};
+use crate::bindings::{CudaError, CudaResult};
 use std::collections::HashMap;
+#[cfg(feature = "cuda")]
 use std::ffi::c_void;
 
 #[cfg(feature = "cuda")]
@@ -203,13 +204,18 @@ mod tests {
 
     #[test]
     fn test_state_manager() {
-        let mut manager = GpuStateManager::new();
-
         #[cfg(feature = "cuda")]
         {
+            let mut manager = GpuStateManager::new();
             let result = manager.get_or_create(0, 1024);
             assert!(result.is_ok());
             assert_eq!(manager.total_memory_bytes(), 1024 * 4 * 2); // 2 buffers
+        }
+
+        #[cfg(not(feature = "cuda"))]
+        {
+            let manager = GpuStateManager::new();
+            assert_eq!(manager.total_memory_bytes(), 0);
         }
     }
 }

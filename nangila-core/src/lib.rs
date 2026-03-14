@@ -23,17 +23,17 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod compressor;
 pub mod config;
+pub mod dgc;
 pub mod dtype;
 pub mod mask;
+pub mod power_sgd;
 pub mod predictor;
 pub mod quantizer;
 pub mod reconstructor;
 pub mod sculptor;
 pub mod state;
-pub mod compressor;
-pub mod dgc;
-pub mod power_sgd;
 
 #[cfg(test)]
 mod compressor_tests;
@@ -50,14 +50,14 @@ pub mod safe_mode;
 pub mod metrics;
 pub mod topology_report;
 
+pub use compressor::{Compressor, PipelineCompressor, PredictionResidualCompressor};
 pub use config::NangilaConfig;
 pub use mask::{LayerRole, TopologyMask};
+pub use power_sgd::{PowerSGDCompressor, PowerSGDPacket};
 pub use predictor::Predictor;
 pub use quantizer::{CompressedTensor, Quantizer};
 pub use reconstructor::Reconstructor;
 pub use sculptor::Sculptor;
-pub use compressor::{Compressor, PipelineCompressor, PredictionResidualCompressor};
-pub use power_sgd::{PowerSGDCompressor, PowerSGDPacket};
 pub use state::{
     CompressionResult, CompressionStats, LayerTelemetry, NangilaState, SummaryTelemetry,
 };

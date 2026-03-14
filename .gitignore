@@ -6,6 +6,8 @@
 
 # Python
 __pycache__/
+.pytest_cache/
+.venv/
 *.py[cod]
 *$py.class
 *.egg-info/
@@ -35,3 +37,8 @@ Cargo.lock
 # Test artifacts
 *.nzmask
 *.log
+test_output.txt
+test_result_final.txt
+test_result_final_2.txt
+nangila-hook/check_output.txt
+nangila-hook/check_output_cuda.txt

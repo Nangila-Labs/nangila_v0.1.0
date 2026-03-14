@@ -7,7 +7,12 @@ use crate::safe_mode::{SafeMode, SafeModeAction, SafeModeConfig, SafeModeStats};
 use crate::{
     compressor::{Compressor, PredictionResidualCompressor},
     config::CompressorType,
-    CompressedTensor, LayerId, NangilaConfig, Reconstructor, Result, Tensor,
+    CompressedTensor,
+    LayerId,
+    NangilaConfig,
+    Reconstructor,
+    Result,
+    Tensor,
     TopologyMask,
     // Predictor and Quantizer are now internal to specific compressors
 };
@@ -115,17 +120,17 @@ impl NangilaState {
             CompressorType::PredictionResidual => {
                 Box::new(PredictionResidualCompressor::new(config.clone()))
             }
-            CompressorType::DGC => {
-                Box::new(crate::dgc::DGCCompressor::new(config.clone()))
-            }
+            CompressorType::DGC => Box::new(crate::dgc::DGCCompressor::new(config.clone())),
             CompressorType::PowerSGD => {
                 Box::new(crate::power_sgd::PowerSGDCompressor::new(config.clone()))
             }
         };
 
         // Reconstructor is still needed for Passengers
-        let reconstructor =
-            Reconstructor::new(crate::Quantizer::new(config.quantize_bits, config.dynamic_gamma));
+        let reconstructor = Reconstructor::new(crate::Quantizer::new(
+            config.quantize_bits,
+            config.dynamic_gamma,
+        ));
 
         Self {
             config,
@@ -173,11 +178,11 @@ impl NangilaState {
 
         // Driver: delegate to compressor
         let packet = self.compressor.compress(gradient, layer_id)?;
-        
+
         // Deserialize back to CompressedTensor purely for compatibility/telemetry
         // This is inefficient but part of the migration
         let compressed: CompressedTensor = bincode::deserialize(&packet.payload)?;
-        
+
         // Record telemetry (approximate)
         let original_bytes = gradient.numel() * 4;
         let compressed_bytes = packet.payload.len();
@@ -204,13 +209,14 @@ impl NangilaState {
             // Re-serialize strictly to interface with compressor trait (inefficient but necessary for migration)
             let payload = bincode::serialize(compressed)?;
             // Use dummy header/step valid for decompress? Or rely on payload
-            let packet = crate::Packet::new(crate::PacketHeader::default(), payload); 
-            
+            let packet = crate::Packet::new(crate::PacketHeader::default(), payload);
+
             let gradient = self.compressor.decompress(&packet, layer_id)?;
-            
+
             // Register with reconstructor for potential passenger synthesis
-            self.reconstructor.cache_driver_gradient(layer_id, gradient.clone());
-            
+            self.reconstructor
+                .cache_driver_gradient(layer_id, gradient.clone());
+
             gradient
         } else {
             self.reconstructor
@@ -241,14 +247,14 @@ impl NangilaState {
             // Falling back to full decompression (inefficient but correct)
             // Or TODO: Add decompress_partial to trait.
             // For Phase 1 strict adherence, let's do full decompress + slice.
-            
+
             // Re-serialize
             let payload = bincode::serialize(compressed)?;
             let packet = crate::Packet::new(crate::PacketHeader::default(), payload);
-            
+
             let full_grad = self.compressor.decompress(&packet, layer_id)?;
-            
-            // Slice it 
+
+            // Slice it
             // Tensor structure is simple Vec<f32>.
             // Need to map indices
             // This is actually tricky because 'decompress_partial' implies we only transmit/store partial?
@@ -257,14 +263,13 @@ impl NangilaState {
             // If the buffer is full-sized, we just slice.
             // If we only have partial data?
             // CompressedTensor is the full compressed data usually.
-            
+
             // Let's stub with TODO or full implementation.
             // Slicing:
             let start = start_index.min(full_grad.numel());
             let end = end_index.min(full_grad.numel());
             let data = full_grad.data[start..end].to_vec();
             Tensor::new(data, vec![end - start])
-            
         } else {
             // For passengers, we need the source driver to be cached
             // This requires drivers to be reconstructed before passengers in FSDP
@@ -286,38 +291,41 @@ impl NangilaState {
         // We can't use Reconstructor::reconstruct_all easily without exposing Predictor from Compressor.
         // Instead, loop and decompress individually using Compressor trait.
         // This loses batch optimization potential but works for abstraction.
-        
+
         let mut results = HashMap::new();
         for (&layer_id, compressed) in compressed_drivers {
-             let payload = bincode::serialize(compressed)?;
-             let packet = crate::Packet::new(crate::PacketHeader::default(), payload);
-             let tensor = self.compressor.decompress(&packet, layer_id)?;
-             
-             // Register with reconstructor
-             self.reconstructor.cache_driver_gradient(layer_id, tensor.clone());
-             
-             results.insert(layer_id, tensor);
+            let payload = bincode::serialize(compressed)?;
+            let packet = crate::Packet::new(crate::PacketHeader::default(), payload);
+            let tensor = self.compressor.decompress(&packet, layer_id)?;
+
+            // Register with reconstructor
+            self.reconstructor
+                .cache_driver_gradient(layer_id, tensor.clone());
+
+            results.insert(layer_id, tensor);
         }
-        
+
         // Passengers? 'reconstruct_all' usually handles passengers too.
         // We need to synthesize passengers efficiently.
         // Reconstructor::synthesize_passengers_bulk?
         // Let's assume we just returned drivers here.
         // Original reconstruct_all did both drivers and passengers.
-        
+
         // Synthesize passengers
         // We need 'reconstructor' to handle this.
         // But 'reconstructor' in NangilaState is intended for Passengers now.
         // Does 'reconstructor' have access to the decompressed drivers?
         // We can pass them.
-        
+
         // For now, let's implement simplified logic.
         // Iterate passengers in mask
         for (passenger_id, _, _) in self.mask.passengers() {
-             let tensor = self.reconstructor.synthesize_passenger(passenger_id, &self.mask)?;
-             results.insert(passenger_id, tensor);
+            let tensor = self
+                .reconstructor
+                .synthesize_passenger(passenger_id, &self.mask)?;
+            results.insert(passenger_id, tensor);
         }
-        
+
         Ok(results)
     }
 

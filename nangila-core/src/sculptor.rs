@@ -184,8 +184,6 @@ pub struct Sculptor {
     layer_sizes: HashMap<LayerId, usize>,
     /// Number of times end_step() was called (for validation)
     step_count: usize,
-    /// Maximum number of correlation pairs to compute (for large models)
-    max_correlation_pairs: Option<usize>,
     /// Sampling strategy for large models
     sampling_strategy: SamplingStrategy,
 }
@@ -200,7 +198,6 @@ impl Sculptor {
             current_gradients: HashMap::new(),
             layer_sizes: HashMap::new(),
             step_count: 0,
-            max_correlation_pairs: None,
             sampling_strategy: SamplingStrategy::default(),
         }
     }
@@ -222,7 +219,6 @@ impl Sculptor {
             current_gradients: HashMap::new(),
             layer_sizes: HashMap::new(),
             step_count: 0,
-            max_correlation_pairs: Some(num_layers * 20), // O(n) instead of O(n²)
             sampling_strategy: strategy,
         }
     }
