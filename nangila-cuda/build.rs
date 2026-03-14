@@ -67,8 +67,7 @@ Set CUDA_HOME/CUDA_PATH to a valid toolkit root and ensure nvcc is available.",
 
     let cu_files = ["predict.cu", "reconstruct.cu", "gamma.cu", "crc32.cu"];
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let cuda_arches = env::var("NANGILA_CUDA_ARCHES")
-        .unwrap_or_else(|_| "80,89,90".to_string());
+    let cuda_arches = env::var("NANGILA_CUDA_ARCHES").unwrap_or_else(|_| "80,89,90".to_string());
     let gencode_args: Vec<String> = cuda_arches
         .split(',')
         .map(str::trim)
@@ -112,8 +111,7 @@ Set CUDA_HOME/CUDA_PATH to a valid toolkit root and ensure nvcc is available.",
         let status = cmd.status();
 
         match status {
-            Ok(s) if s.success() => {
-            }
+            Ok(s) if s.success() => {}
             Ok(s) => {
                 println!(
                     "cargo:warning=nvcc failed for {} with exit code {:?}",
@@ -154,7 +152,5 @@ Set CUDA_HOME/CUDA_PATH to a valid toolkit root and ensure nvcc is available.",
         }
     }
 
-    panic!(
-        "CUDA feature was requested, but CUDA kernels were not compiled successfully."
-    );
+    panic!("CUDA feature was requested, but CUDA kernels were not compiled successfully.");
 }
